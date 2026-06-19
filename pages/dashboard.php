@@ -243,7 +243,8 @@ $revLast = fetchOne("
 $revLastBRL = ($revLast['total'] ?? 0) * $cotacao;
 
 // --- Hourly FB performance (same dashboard filters) ---
-$hourlyRaw = [];
+$hourlyRows = [];
+$hourlyRevenueRows = [];
 try {
     if (function_exists('ensureFBHourlyTable')) {
         ensureFBHourlyTable();
@@ -271,22 +272,76 @@ try {
         $hourParams[] = $dashSite;
     }
 
-    $hourlyRaw = fetchAll("
-        SELECT fh.hour_start,
+    $hourlyRows = fetchAll("
+        SELECT fh.date,
+               fh.hour_start,
                MIN(fh.hour_label) as hour_label,
+               fh.campaign_id,
+               MIN(fh.campaign_name) as campaign_name,
+               fh.account_name,
                SUM(fh.spend) as spend,
                SUM(fh.impressions) as impressions,
                SUM(fh.clicks) as clicks,
-               SUM(fh.results) as results,
-               COUNT(DISTINCT fh.date) as days_count,
-               COUNT(DISTINCT fh.campaign_id) as campaigns
+               SUM(fh.results) as results
         FROM fb_hourly fh
         {$hourWhere}
-        GROUP BY fh.hour_start
-        ORDER BY fh.hour_start
+        GROUP BY fh.date, fh.hour_start, fh.campaign_id, fh.account_name
+        ORDER BY fh.date, fh.hour_start
     ", $hourParams);
+
+    $revHourlyWhere = "WHERE date BETWEEN ? AND ?";
+    $revHourlyParams = [$monthStart, $monthEnd];
+    if ($dashSite) {
+        $revHourlyWhere .= " AND site_name = ?";
+        $revHourlyParams[] = $dashSite;
+    }
+    if ($searchCampaign) {
+        $revHourlyWhere .= " AND (campaign_id LIKE ? OR utm_campaign LIKE ?)";
+        $revHourlyParams[] = "%{$searchCampaign}%";
+        $revHourlyParams[] = "%{$searchCampaign}%";
+    }
+
+    $hourlyRevenueRows = fetchAll("
+        SELECT date,
+               CASE
+                   WHEN utm_campaign IS NOT NULL AND utm_campaign != '' THEN utm_campaign
+                   ELSE campaign_id
+               END as campaign_key,
+               SUM(receita_usd) as receita_usd
+        FROM revenue
+        {$revHourlyWhere}
+        GROUP BY date, CASE
+            WHEN utm_campaign IS NOT NULL AND utm_campaign != '' THEN utm_campaign
+            ELSE campaign_id
+        END
+    ", $revHourlyParams);
 } catch (Exception $e) {
-    $hourlyRaw = [];
+    $hourlyRows = [];
+    $hourlyRevenueRows = [];
+}
+
+$hourlyRevenueMap = [];
+foreach ($hourlyRevenueRows as $revHour) {
+    $revKey = ($revHour['date'] ?? '') . '|' . ($revHour['campaign_key'] ?? '');
+    $hourlyRevenueMap[$revKey] = (float)($revHour['receita_usd'] ?? 0);
+}
+
+$hourlyDayTotals = [];
+foreach ($hourlyRows as $hr) {
+    $dayKey = ($hr['date'] ?? '') . '|' . ($hr['campaign_id'] ?? '');
+    if (!isset($hourlyDayTotals[$dayKey])) {
+        $hourlyDayTotals[$dayKey] = [
+            'spend' => 0,
+            'impressions' => 0,
+            'clicks' => 0,
+            'results' => 0,
+        ];
+    }
+
+    $hourlyDayTotals[$dayKey]['spend'] += (float)($hr['spend'] ?? 0);
+    $hourlyDayTotals[$dayKey]['impressions'] += (int)($hr['impressions'] ?? 0);
+    $hourlyDayTotals[$dayKey]['clicks'] += (int)($hr['clicks'] ?? 0);
+    $hourlyDayTotals[$dayKey]['results'] += (int)($hr['results'] ?? 0);
 }
 
 $hourlyChartData = [];
@@ -295,7 +350,12 @@ for ($hour = 0; $hour < 24; $hour++) {
         'hour' => sprintf('%02dh', $hour),
         'hour_start' => $hour,
         'hour_label' => sprintf('%02d:00 - %02d:59', $hour, $hour),
+        'receita_brl' => 0,
         'spend' => 0,
+        'imposto_fb' => 0,
+        'imposto_receita' => 0,
+        'custo_total' => 0,
+        'lucro' => 0,
         'impressions' => 0,
         'clicks' => 0,
         'results' => 0,
@@ -305,72 +365,88 @@ for ($hour = 0; $hour < 24; $hour++) {
         'cost_per_result' => 0,
         'days_count' => 0,
         'campaigns' => 0,
+        'campaign_keys' => [],
+        'active_rows' => 0,
     ];
 }
 
-foreach ($hourlyRaw as $hr) {
+foreach ($hourlyRows as $hr) {
     $hour = max(0, min(23, (int)($hr['hour_start'] ?? 0)));
     $spend = (float)($hr['spend'] ?? 0);
     $impressions = (int)($hr['impressions'] ?? 0);
     $clicks = (int)($hr['clicks'] ?? 0);
     $results = (int)($hr['results'] ?? 0);
+    $dayKey = ($hr['date'] ?? '') . '|' . ($hr['campaign_id'] ?? '');
+    $dayTotals = $hourlyDayTotals[$dayKey] ?? ['spend' => 0, 'impressions' => 0, 'clicks' => 0, 'results' => 0];
+    $share = 0;
 
-    $hourlyChartData[$hour] = [
-        'hour' => sprintf('%02dh', $hour),
-        'hour_start' => $hour,
-        'hour_label' => $hr['hour_label'] ?: sprintf('%02d:00 - %02d:59', $hour, $hour),
-        'spend' => $spend,
-        'impressions' => $impressions,
-        'clicks' => $clicks,
-        'results' => $results,
-        'cpc' => $clicks > 0 ? $spend / $clicks : 0,
-        'ctr' => $impressions > 0 ? ($clicks / $impressions) * 100 : 0,
-        'cpm' => $impressions > 0 ? ($spend / $impressions) * 1000 : 0,
-        'cost_per_result' => $results > 0 ? $spend / $results : 0,
-        'days_count' => (int)($hr['days_count'] ?? 0),
-        'campaigns' => (int)($hr['campaigns'] ?? 0),
-    ];
+    if (($dayTotals['results'] ?? 0) > 0) {
+        $share = $results / $dayTotals['results'];
+    } elseif (($dayTotals['clicks'] ?? 0) > 0) {
+        $share = $clicks / $dayTotals['clicks'];
+    } elseif (($dayTotals['impressions'] ?? 0) > 0) {
+        $share = $impressions / $dayTotals['impressions'];
+    } elseif (($dayTotals['spend'] ?? 0) > 0) {
+        $share = $spend / $dayTotals['spend'];
+    }
+
+    $receitaUsd = $hourlyRevenueMap[$dayKey] ?? 0;
+    $receitaBrl = $receitaUsd * $cotacao * $share;
+    $impostoFbHora = $spend * $taxaFb;
+    $impostoReceitaHora = $receitaBrl * $taxaOutros;
+    $custoTotalHora = $spend + $impostoFbHora + $impostoReceitaHora;
+    $lucroHora = $receitaBrl - $custoTotalHora;
+
+    $hourlyChartData[$hour]['hour_label'] = $hr['hour_label'] ?: $hourlyChartData[$hour]['hour_label'];
+    $hourlyChartData[$hour]['receita_brl'] += $receitaBrl;
+    $hourlyChartData[$hour]['spend'] += $spend;
+    $hourlyChartData[$hour]['imposto_fb'] += $impostoFbHora;
+    $hourlyChartData[$hour]['imposto_receita'] += $impostoReceitaHora;
+    $hourlyChartData[$hour]['custo_total'] += $custoTotalHora;
+    $hourlyChartData[$hour]['lucro'] += $lucroHora;
+    $hourlyChartData[$hour]['impressions'] += $impressions;
+    $hourlyChartData[$hour]['clicks'] += $clicks;
+    $hourlyChartData[$hour]['results'] += $results;
+    $hourlyChartData[$hour]['active_rows']++;
+    $hourlyChartData[$hour]['campaign_keys'][$hr['campaign_id'] ?? ''] = true;
+    if ($hr['date'] ?? '') {
+        $hourlyChartData[$hour]['days'][$hr['date']] = true;
+    }
 }
+
+foreach ($hourlyChartData as &$hourData) {
+    $hourData['cpc'] = $hourData['clicks'] > 0 ? $hourData['spend'] / $hourData['clicks'] : 0;
+    $hourData['ctr'] = $hourData['impressions'] > 0 ? ($hourData['clicks'] / $hourData['impressions']) * 100 : 0;
+    $hourData['cpm'] = $hourData['impressions'] > 0 ? ($hourData['spend'] / $hourData['impressions']) * 1000 : 0;
+    $hourData['cost_per_result'] = $hourData['results'] > 0 ? $hourData['spend'] / $hourData['results'] : 0;
+    $hourData['campaigns'] = count(array_filter(array_keys($hourData['campaign_keys'])));
+    $hourData['days_count'] = isset($hourData['days']) ? count($hourData['days']) : 0;
+    unset($hourData['campaign_keys'], $hourData['days']);
+}
+unset($hourData);
 $hourlyChartData = array_values($hourlyChartData);
 
 $hourlyTotalResults = array_sum(array_column($hourlyChartData, 'results'));
 $hourlyTotalClicks = array_sum(array_column($hourlyChartData, 'clicks'));
 $hourlyTotalSpend = array_sum(array_column($hourlyChartData, 'spend'));
-$hourlyHasData = ($hourlyTotalSpend > 0 || $hourlyTotalClicks > 0 || $hourlyTotalResults > 0);
-$hourlyMetricLabel = $hourlyTotalResults > 0 ? 'Resultados' : 'Cliques';
+$hourlyTotalReceita = array_sum(array_column($hourlyChartData, 'receita_brl'));
+$hourlyTotalProfit = array_sum(array_column($hourlyChartData, 'lucro'));
+$hourlyHasData = ($hourlyTotalSpend > 0 || $hourlyTotalReceita > 0 || $hourlyTotalClicks > 0 || $hourlyTotalResults > 0);
+$hourlyMetricLabel = 'Lucro estimado';
 $bestHour = null;
-$volumeHour = null;
-$lowestCpcHour = null;
+$worstHour = null;
 
 foreach ($hourlyChartData as $hourRow) {
-    if ($hourRow['spend'] <= 0 && $hourRow['clicks'] <= 0 && $hourRow['results'] <= 0) {
+    if ($hourRow['spend'] <= 0 && $hourRow['receita_brl'] <= 0 && $hourRow['clicks'] <= 0 && $hourRow['results'] <= 0) {
         continue;
     }
 
-    if ($hourlyTotalResults > 0) {
-        if (!$bestHour
-            || $hourRow['results'] > $bestHour['results']
-            || ($hourRow['results'] === $bestHour['results']
-                && $hourRow['results'] > 0
-                && ($bestHour['cost_per_result'] <= 0 || $hourRow['cost_per_result'] < $bestHour['cost_per_result']))) {
-            $bestHour = $hourRow;
-        }
-    } elseif ($hourRow['clicks'] > 0) {
-        if (!$bestHour || $hourRow['cpc'] < $bestHour['cpc']) {
-            $bestHour = $hourRow;
-        }
+    if (!$bestHour || $hourRow['lucro'] > $bestHour['lucro']) {
+        $bestHour = $hourRow;
     }
-
-    if (!$volumeHour || $hourRow['clicks'] > $volumeHour['clicks']) {
-        $volumeHour = $hourRow;
+    if (!$worstHour || $hourRow['lucro'] < $worstHour['lucro']) {
+        $worstHour = $hourRow;
     }
-    if ($hourRow['clicks'] > 0 && (!$lowestCpcHour || $hourRow['cpc'] < $lowestCpcHour['cpc'])) {
-        $lowestCpcHour = $hourRow;
-    }
-}
-
-if (!$bestHour) {
-    $bestHour = $volumeHour;
 }
 
 $lastDateLabel = formatDate($lastDate);
@@ -479,20 +555,21 @@ ob_start();
 <!-- Hourly Results Chart -->
 <div class="chart-container">
     <div class="chart-header" style="align-items:flex-start;gap:12px;flex-wrap:wrap;">
-        <span class="chart-title">Resultados por hora</span>
+        <span class="chart-title">Lucro estimado por hora</span>
         <?php if ($hourlyHasData): ?>
         <div class="table-actions" style="display:flex;gap:8px;flex-wrap:wrap;">
+            <span class="badge <?= $hourlyTotalProfit >= 0 ? 'badge-green' : 'badge-red' ?>">
+                Saldo: <?= formatMoney($hourlyTotalProfit) ?>
+            </span>
             <?php if ($bestHour): ?>
-            <span class="badge badge-blue">
-                <?= $hourlyTotalResults > 0 ? 'Melhor resultado' : 'Melhor CPC' ?>:
-                <?= sanitize($bestHour['hour']) ?>
+            <span class="badge <?= $bestHour['lucro'] >= 0 ? 'badge-green' : 'badge-red' ?>">
+                Melhor: <?= sanitize($bestHour['hour']) ?> (<?= formatMoney($bestHour['lucro']) ?>)
             </span>
             <?php endif; ?>
-            <?php if ($volumeHour): ?>
-            <span class="badge badge-green">Mais cliques: <?= sanitize($volumeHour['hour']) ?> (<?= formatNumber($volumeHour['clicks']) ?>)</span>
-            <?php endif; ?>
-            <?php if ($lowestCpcHour): ?>
-            <span class="badge badge-yellow">Menor CPC: <?= sanitize($lowestCpcHour['hour']) ?> (<?= formatMoney($lowestCpcHour['cpc']) ?>)</span>
+            <?php if ($worstHour && $worstHour['hour_start'] !== ($bestHour['hour_start'] ?? null)): ?>
+            <span class="badge <?= $worstHour['lucro'] < 0 ? 'badge-red' : 'badge-yellow' ?>">
+                Pior: <?= sanitize($worstHour['hour']) ?> (<?= formatMoney($worstHour['lucro']) ?>)
+            </span>
             <?php endif; ?>
         </div>
         <?php endif; ?>
@@ -698,10 +775,11 @@ document.addEventListener('DOMContentLoaded', function() {
 
     const hourlyData = <?= json_encode($hourlyChartData) ?>;
     const hourlyMetricLabel = <?= json_encode($hourlyMetricLabel) ?>;
-    const hasHourlyResults = <?= $hourlyTotalResults > 0 ? 'true' : 'false' ?>;
     const hourlyCtx = document.getElementById('hourlyResultsChart');
 
     if (hourlyCtx && hourlyData.length > 0) {
+        const hourlyLimit = Math.max(...hourlyData.map(d => Math.abs(Number(d.lucro) || 0)), 1) * 1.15;
+
         new Chart(hourlyCtx, {
             type: 'bar',
             data: {
@@ -709,33 +787,12 @@ document.addEventListener('DOMContentLoaded', function() {
                 datasets: [
                     {
                         label: hourlyMetricLabel,
-                        data: hourlyData.map(d => hasHourlyResults ? (Number(d.results) || 0) : (Number(d.clicks) || 0)),
-                        backgroundColor: 'rgba(10, 132, 255, 0.55)',
-                        borderColor: '#0a84ff',
+                        data: hourlyData.map(d => Number(d.lucro) || 0),
+                        backgroundColor: hourlyData.map(d => (Number(d.lucro) || 0) >= 0 ? 'rgba(48, 209, 88, 0.72)' : 'rgba(255, 69, 58, 0.72)'),
+                        borderColor: hourlyData.map(d => (Number(d.lucro) || 0) >= 0 ? '#30d158' : '#ff453a'),
                         borderWidth: 1,
                         borderRadius: 4,
                         yAxisID: 'y'
-                    },
-                    {
-                        type: 'line',
-                        label: 'Gasto FB',
-                        data: hourlyData.map(d => Number(d.spend) || 0),
-                        borderColor: '#ff9f0a',
-                        backgroundColor: 'rgba(255, 159, 10, 0.12)',
-                        pointRadius: 3,
-                        tension: 0.35,
-                        hidden: true,
-                        yAxisID: 'y1'
-                    },
-                    {
-                        type: 'line',
-                        label: 'CPC',
-                        data: hourlyData.map(d => Number(d.cpc) || 0),
-                        borderColor: '#30d158',
-                        backgroundColor: 'rgba(48, 209, 88, 0.12)',
-                        pointRadius: 3,
-                        tension: 0.35,
-                        yAxisID: 'y1'
                     }
                 ]
             },
@@ -748,15 +805,16 @@ document.addEventListener('DOMContentLoaded', function() {
                     tooltip: {
                         callbacks: {
                             label: function(ctx) {
-                                if (ctx.dataset.label === 'Gasto FB' || ctx.dataset.label === 'CPC') {
-                                    return ctx.dataset.label + ': ' + money(ctx.parsed.y);
-                                }
-                                return ctx.dataset.label + ': ' + (Number(ctx.parsed.y) || 0).toLocaleString('pt-BR');
+                                return ctx.dataset.label + ': ' + money(ctx.parsed.y);
                             },
                             afterBody: function(items) {
                                 const item = items[0];
                                 const hour = hourlyData[item.dataIndex] || {};
                                 return [
+                                    'Receita: ' + money(hour.receita_brl),
+                                    'Custo total: ' + money(hour.custo_total),
+                                    'Investimento FB: ' + money(hour.spend),
+                                    'Resultados: ' + (Number(hour.results) || 0).toLocaleString('pt-BR'),
                                     'Impressões: ' + (Number(hour.impressions) || 0).toLocaleString('pt-BR'),
                                     'Cliques: ' + (Number(hour.clicks) || 0).toLocaleString('pt-BR'),
                                     'CTR: ' + (Number(hour.ctr) || 0).toFixed(2) + '%'
@@ -768,19 +826,17 @@ document.addEventListener('DOMContentLoaded', function() {
                 scales: {
                     x: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#636366', maxRotation: 0 } },
                     y: {
-                        beginAtZero: true,
-                        grid: { color: 'rgba(255,255,255,0.04)' },
-                        ticks: { color: '#636366' },
-                        title: { display: true, text: hourlyMetricLabel, color: '#98989f' }
-                    },
-                    y1: {
-                        beginAtZero: true,
-                        position: 'right',
-                        grid: { drawOnChartArea: false },
+                        min: -hourlyLimit,
+                        max: hourlyLimit,
+                        grid: {
+                            color: context => context.tick.value === 0 ? 'rgba(255,255,255,0.45)' : 'rgba(255,255,255,0.04)',
+                            lineWidth: context => context.tick.value === 0 ? 2 : 1
+                        },
                         ticks: {
                             color: '#636366',
                             callback: value => money(value)
-                        }
+                        },
+                        title: { display: true, text: hourlyMetricLabel, color: '#98989f' }
                     }
                 }
             }
