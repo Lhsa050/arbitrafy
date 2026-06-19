@@ -72,7 +72,8 @@ function getSetting($key, $default = '') {
 function setSetting($key, $value) {
     $existing = fetchOne("SELECT id FROM settings WHERE setting_key = ?", [$key]);
     if ($existing) {
-        query("UPDATE settings SET setting_value = ?, updated_at = datetime('now') WHERE setting_key = ?", [$value, $key]);
+        $nowExpr = (defined('DB_TYPE') && DB_TYPE === 'mysql') ? 'NOW()' : "datetime('now')";
+        query("UPDATE settings SET setting_value = ?, updated_at = {$nowExpr} WHERE setting_key = ?", [$value, $key]);
     } else {
         insert('settings', ['setting_key' => $key, 'setting_value' => $value]);
     }

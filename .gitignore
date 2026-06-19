@@ -1,0 +1,8 @@
+/storage/
+/uploads/
+/database/*.sqlite
+/database/*.sqlite-*
+/config/*.json
+/config.php
+/config.local.php
+/.env

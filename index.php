@@ -54,7 +54,7 @@ requireLogin();
 // Valid pages
 $validPages = [
     'dashboard', 'campaigns', 'analytics', 'placements', 'devices', 'revenue', 'programmatic',
-    'financial', 'spending-plan', 'tasks', 'logs',
+    'financial', 'spending-plan', 'tasks', 'logs', 'update',
     'settings', 'google-ads', 'connect-facebook', 'connect-google', 'connect-gam', 'connect-ga4'
 ];
 
@@ -81,6 +81,7 @@ $pageTitles = [
     'spending-plan' => 'Plano de Gastos',
     'tasks' => 'Tarefas',
     'logs' => 'Sync Logs',
+    'update' => 'Atualizacao',
 
     'settings' => 'Configurações',
     'google-ads' => 'Google Ads',
@@ -174,6 +175,10 @@ $pageTitle = $pageTitles[$page] ?? 'Dashboard';
                 <a href="?page=logs" class="nav-item <?= $page === 'logs' ? 'active' : '' ?>">
                     <span class="nav-icon">📋</span>
                     <span class="nav-text">Sync Logs</span>
+                </a>
+                <a href="?page=update" class="nav-item <?= $page === 'update' ? 'active' : '' ?>">
+                    <span class="nav-icon">&#8635;</span>
+                    <span class="nav-text">Atualizacao</span>
                 </a>
 
                 <div class="nav-divider"></div>

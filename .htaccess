@@ -1,0 +1,23 @@
+# === Bússola do Tráfego — .htaccess ===
+RewriteEngine On
+
+# Proteção: bloquear acesso ao banco de dados
+<FilesMatch "\.(sqlite|db)$">
+    Order Allow,Deny
+    Deny from all
+</FilesMatch>
+
+# Proteção: bloquear diretórios sensíveis
+RewriteRule ^database/ - [F,L]
+RewriteRule ^config/ - [F,L]
+RewriteRule ^includes/ - [F,L]
+RewriteRule ^storage/ - [F,L]
+
+# Bloquear acesso direto a CLI scripts
+RewriteRule ^cli_ - [F,L]
+
+# PHP settings
+php_value upload_max_filesize 20M
+php_value post_max_size 25M
+php_value max_execution_time 300
+php_value memory_limit 256M
