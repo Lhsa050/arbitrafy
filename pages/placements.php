@@ -77,80 +77,52 @@ function normalizePlacement($name) {
 // Detail by Campaign + Placement (no filters)
 // ==========================================
 
-// 1) Real revenue per campaign from `revenue` table (same source as Dashboard)
+// 1) Real revenue per date+campaign from `revenue` table (same source as Dashboard)
 $realRevData = fetchAll("
     SELECT
+        date,
         campaign_id,
         SUM(receita_usd) * {$cotacao} as real_revenue_brl,
         SUM(gam_impressions) as real_gam_impressions
     FROM revenue
     WHERE date BETWEEN ? AND ?
-    GROUP BY campaign_id
+    GROUP BY date, campaign_id
 ", [$dateFrom, $dateTo]);
-$realRevByCampaign = [];
-foreach ($realRevData as $rr) {
-    $realRevByCampaign[$rr['campaign_id']] = $rr;
-}
 
-// 2) Placement-level breakdown from `revenue_placements` (normalized)
+// 2) Placement-level breakdown from `revenue_placements` (normalized by date)
 $placementData = fetchAll("
     SELECT
+        rp.date,
         rp.placement,
         rp.campaign_id,
         SUM(rp.receita_usd) as raw_revenue_usd,
         SUM(rp.gam_impressions) as gam_impressions
     FROM revenue_placements rp
     WHERE rp.date BETWEEN ? AND ?
-    GROUP BY rp.campaign_id, rp.placement
+    GROUP BY rp.date, rp.campaign_id, rp.placement
 ", [$dateFrom, $dateTo]);
 
-// Group by campaign, merging normalized placement names
-$placementsByCampaign = [];
+// Group GAM breakdown by date+campaign, merging normalized placement names
+$placementsByDateCampaign = [];
 foreach ($placementData as $pd) {
     $cid = $pd['campaign_id'];
+    $dcKey = $pd['date'] . '|' . $cid;
     $norm = normalizePlacement($pd['placement']);
-    if (!isset($placementsByCampaign[$cid])) {
-        $placementsByCampaign[$cid] = ['total_raw_usd' => 0, 'placements' => []];
+    if (!isset($placementsByDateCampaign[$dcKey])) {
+        $placementsByDateCampaign[$dcKey] = ['total_raw_usd' => 0, 'placements' => []];
     }
-    if (!isset($placementsByCampaign[$cid]['placements'][$norm])) {
-        $placementsByCampaign[$cid]['placements'][$norm] = ['raw_revenue_usd' => 0, 'gam_impressions' => 0];
+    if (!isset($placementsByDateCampaign[$dcKey]['placements'][$norm])) {
+        $placementsByDateCampaign[$dcKey]['placements'][$norm] = ['raw_revenue_usd' => 0, 'gam_impressions' => 0];
     }
-    $placementsByCampaign[$cid]['placements'][$norm]['raw_revenue_usd'] += (float)$pd['raw_revenue_usd'];
-    $placementsByCampaign[$cid]['placements'][$norm]['gam_impressions'] += (int)$pd['gam_impressions'];
-    $placementsByCampaign[$cid]['total_raw_usd'] += (float)$pd['raw_revenue_usd'];
+    $placementsByDateCampaign[$dcKey]['placements'][$norm]['raw_revenue_usd'] += (float)$pd['raw_revenue_usd'];
+    $placementsByDateCampaign[$dcKey]['placements'][$norm]['gam_impressions'] += (int)$pd['gam_impressions'];
+    $placementsByDateCampaign[$dcKey]['total_raw_usd'] += (float)$pd['raw_revenue_usd'];
 }
 
-// Build scaled GAM map
-$gamMap = [];
-foreach ($placementsByCampaign as $cid => $campData) {
-    $realRev = $realRevByCampaign[$cid]['real_revenue_brl'] ?? 0;
-    $realImp = (int)($realRevByCampaign[$cid]['real_gam_impressions'] ?? 0);
-    $totalRawUsd = $campData['total_raw_usd'];
-    
-    foreach ($campData['placements'] as $plName => $pd) {
-        $rawUsd = $pd['raw_revenue_usd'];
-        if ($totalRawUsd > 0) {
-            $proportion = $rawUsd / $totalRawUsd;
-            $scaledRev = (float)$realRev * $proportion;
-            $scaledImp = (int)round($realImp * $proportion);
-        } else {
-            $scaledRev = 0;
-            $scaledImp = $pd['gam_impressions'];
-        }
-        
-        $key = $cid . '|' . $plName;
-        $gamMap[$key] = [
-            'campaign_id' => $cid,
-            'placement' => $plName,
-            'revenue' => $scaledRev,
-            'gam_impressions' => $scaledImp,
-        ];
-    }
-}
-
-// 3) FB spend per campaign+placement (normalized + merged)
+// 3) FB spend per date+campaign+placement (normalized + merged)
 $fbData = fetchAll("
     SELECT
+        fp.date,
         fp.placement,
         fp.campaign_id,
         fp.campaign_name,
@@ -159,12 +131,16 @@ $fbData = fetchAll("
         SUM(fp.clicks) as fb_clicks
     FROM fb_placements fp
     WHERE fp.date BETWEEN ? AND ?
-    GROUP BY fp.campaign_id, fp.placement
+    GROUP BY fp.date, fp.campaign_id, fp.placement
 ", [$dateFrom, $dateTo]);
+
 $fbMap = [];
+$fbByDateCampaign = [];
 foreach ($fbData as $f) {
     $norm = normalizePlacement($f['placement']);
     $key = $f['campaign_id'] . '|' . $norm;
+    $dcKey = $f['date'] . '|' . $f['campaign_id'];
+
     if (!isset($fbMap[$key])) {
         $fbMap[$key] = $f;
         $fbMap[$key]['placement'] = $norm;
@@ -174,6 +150,113 @@ foreach ($fbData as $f) {
         $fbMap[$key]['fb_impressions'] = (int)$fbMap[$key]['fb_impressions'] + (int)$f['fb_impressions'];
         $fbMap[$key]['fb_clicks'] = (int)$fbMap[$key]['fb_clicks'] + (int)$f['fb_clicks'];
     }
+
+    if (!isset($fbByDateCampaign[$dcKey])) {
+        $fbByDateCampaign[$dcKey] = [
+            'total_spend' => 0,
+            'total_impressions' => 0,
+            'placements' => [],
+        ];
+    }
+    if (!isset($fbByDateCampaign[$dcKey]['placements'][$norm])) {
+        $fbByDateCampaign[$dcKey]['placements'][$norm] = [
+            'spend' => 0,
+            'impressions' => 0,
+        ];
+    }
+    $fbByDateCampaign[$dcKey]['placements'][$norm]['spend'] += (float)$f['fb_spend'];
+    $fbByDateCampaign[$dcKey]['placements'][$norm]['impressions'] += (int)$f['fb_impressions'];
+    $fbByDateCampaign[$dcKey]['total_spend'] += (float)$f['fb_spend'];
+    $fbByDateCampaign[$dcKey]['total_impressions'] += (int)$f['fb_impressions'];
+}
+
+// Build GAM map day by day. If GAM does not send utm_content for a day,
+// estimate placement revenue from that day's FB placement distribution.
+$gamMap = [];
+$fallbackAllocations = 0;
+$directAllocations = 0;
+$campaignOnlyAllocations = 0;
+
+foreach ($realRevData as $rr) {
+    $cid = $rr['campaign_id'];
+    $date = $rr['date'];
+    $dcKey = $date . '|' . $cid;
+    $realRev = (float)$rr['real_revenue_brl'];
+    $realImp = (int)($rr['real_gam_impressions'] ?? 0);
+
+    if ($realRev <= 0) {
+        continue;
+    }
+
+    if (!empty($placementsByDateCampaign[$dcKey]['placements']) && $placementsByDateCampaign[$dcKey]['total_raw_usd'] > 0) {
+        $totalRawUsd = (float)$placementsByDateCampaign[$dcKey]['total_raw_usd'];
+        foreach ($placementsByDateCampaign[$dcKey]['placements'] as $plName => $pd) {
+            $proportion = (float)$pd['raw_revenue_usd'] / $totalRawUsd;
+            $key = $cid . '|' . $plName;
+            if (!isset($gamMap[$key])) {
+                $gamMap[$key] = [
+                    'campaign_id' => $cid,
+                    'placement' => $plName,
+                    'revenue' => 0,
+                    'gam_impressions' => 0,
+                    'estimated' => false,
+                    'campaign_only' => false,
+                ];
+            }
+            $gamMap[$key]['revenue'] += $realRev * $proportion;
+            $gamMap[$key]['gam_impressions'] += (int)round($realImp * $proportion);
+            $directAllocations++;
+        }
+        continue;
+    }
+
+    if (!empty($fbByDateCampaign[$dcKey]['placements'])) {
+        $fbDay = $fbByDateCampaign[$dcKey];
+        $totalBasis = $fbDay['total_spend'] > 0 ? $fbDay['total_spend'] : $fbDay['total_impressions'];
+        $fallbackCount = count($fbDay['placements']);
+        foreach ($fbDay['placements'] as $plName => $fp) {
+            if ($totalBasis > 0) {
+                $basis = $fbDay['total_spend'] > 0 ? $fp['spend'] : $fp['impressions'];
+                $proportion = $basis / $totalBasis;
+            } else {
+                $proportion = $fallbackCount > 0 ? 1 / $fallbackCount : 0;
+            }
+            if ($proportion <= 0) {
+                continue;
+            }
+            $key = $cid . '|' . $plName;
+            if (!isset($gamMap[$key])) {
+                $gamMap[$key] = [
+                    'campaign_id' => $cid,
+                    'placement' => $plName,
+                    'revenue' => 0,
+                    'gam_impressions' => 0,
+                    'estimated' => false,
+                    'campaign_only' => false,
+                ];
+            }
+            $gamMap[$key]['revenue'] += $realRev * $proportion;
+            $gamMap[$key]['gam_impressions'] += (int)round($realImp * $proportion);
+            $gamMap[$key]['estimated'] = true;
+            $fallbackAllocations++;
+        }
+        continue;
+    }
+
+    $key = $cid . '|Sem_Placement_GAM';
+    if (!isset($gamMap[$key])) {
+        $gamMap[$key] = [
+            'campaign_id' => $cid,
+            'placement' => 'Sem_Placement_GAM',
+            'revenue' => 0,
+            'gam_impressions' => 0,
+            'estimated' => false,
+            'campaign_only' => true,
+        ];
+    }
+    $gamMap[$key]['revenue'] += $realRev;
+    $gamMap[$key]['gam_impressions'] += $realImp;
+    $campaignOnlyAllocations++;
 }
 
 // Merge GAM + FB
@@ -213,6 +296,8 @@ foreach ($allKeys as $key) {
         'roi' => $spend > 0 ? (($rev - $spend) / $spend) * 100 : 0,
         'has_gam' => $gam !== null,
         'has_fb' => $fb !== null,
+        'is_estimated' => !empty($gam['estimated']),
+        'campaign_only' => !empty($gam['campaign_only']),
     ];
 }
 
@@ -291,6 +376,10 @@ function formatPlacement($name) {
         'Instagram_Shop' => '🛍️ IG Shop',
         'Audience_Network' => '🌐 Audience Network',
         'Messenger_Inbox' => '💬 Messenger',
+        'Threads_Feed' => 'Threads Feed',
+        'Facebook_Profile_Feed' => 'FB Profile Feed',
+        'Others' => 'Outros',
+        'Sem_Placement_GAM' => 'Sem placement GAM',
     ];
     return $map[$name] ?? str_replace('_', ' ', $name);
 }
@@ -308,6 +397,12 @@ ob_start();
 <span id="syncPlStatus" style="font-size:12px;color:var(--text-muted);"></span>
 <?php $dateFilterExtra = ob_get_clean(); ?>
 <?php include __DIR__ . '/../includes/partials/date-filter-bar.php'; ?>
+
+<?php if ($fallbackAllocations > 0): ?>
+<div class="alert alert-warning" style="margin-bottom:16px;">
+    GAM sem utm_content em parte do periodo: <?= (int)$fallbackAllocations ?> distribuicoes de revenue foram estimadas pelo gasto/impressoes do Facebook.
+</div>
+<?php endif; ?>
 
 <!-- Summary Cards -->
 <div class="cards-grid">
@@ -411,7 +506,11 @@ ob_start();
                         <td><?= $r['fb_clicks'] > 0 ? formatNumber($r['fb_clicks']) : '-' ?></td>
                         <td><?= $r['fb_cpc'] > 0 ? formatMoney($r['fb_cpc']) : '-' ?></td>
                         <td>
-                            <?php if ($r['has_gam'] && $r['has_fb']): ?>
+                            <?php if ($r['is_estimated']): ?>
+                                <span class="badge badge-yellow" title="GAM sem utm_content; revenue estimada pela distribuicao do Facebook">Estimado</span>
+                            <?php elseif ($r['campaign_only']): ?>
+                                <span class="badge badge-blue" title="GAM tem revenue da campanha, mas sem placement">GAM camp.</span>
+                            <?php elseif ($r['has_gam'] && $r['has_fb']): ?>
                                 <span title="Dados FB + GAM cruzados" style="font-size:14px;">🟢</span>
                             <?php elseif ($r['has_gam']): ?>
                                 <span title="Só tem dados GAM (sem match no FB)" style="font-size:14px;">🔵</span>
@@ -518,7 +617,7 @@ async function syncPlacements() {
         const gamData = await gamRes.json();
         
         const fbMsg = fbData.success ? `FB: ${fbData.imported} reg, ${fbData.placements || 0} pl` : 'FB: erro';
-        const gamMsg = gamData.success ? `GAM: ${gamData.imported} reg` : 'GAM: erro';
+        const gamMsg = gamData.success ? `GAM: ${gamData.imported} reg, ${gamData.placements_imported || 0} pl` : 'GAM: erro';
         
         status.textContent = `✅ ${fbMsg} | ${gamMsg}`;
         status.style.color = '#10b981';

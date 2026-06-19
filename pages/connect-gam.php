@@ -189,6 +189,7 @@ try {
     <p style="font-size:12px;color:var(--text-muted);margin-bottom:12px;">
         Cadastre seus sites para filtrar receita por site quando o GAM tem múltiplos domínios. 
         O "Padrão Ad Unit" é o texto que identifica o site no nome do Ad Unit do GAM.
+        Se você renomeou blocos, coloque também os nomes novos separados por vírgula, ponto-e-vírgula ou linha nova.
     </p>
     
     <?php if (!empty($gamSites)): ?>
@@ -222,7 +223,7 @@ try {
             </div>
             <div class="form-group">
                 <label class="form-label">Padrão Ad Unit</label>
-                <input type="text" name="ad_unit_pattern" class="form-input" placeholder="meusite ou /12345/meusite" required>
+                <input type="text" name="ad_unit_pattern" class="form-input" placeholder="meusite, novo-bloco, /12345/meusite" required>
             </div>
         </div>
         <button type="submit" class="btn btn-secondary btn-sm">+ Adicionar Site</button>

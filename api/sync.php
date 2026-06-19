@@ -622,6 +622,7 @@ XML;
         // Parse daily totals (with optional site breakdown)
         $dailyTotals = [];       // [date] => revenue_usd (when no sites)
         $dailySiteTotals = [];   // [date][site_name] => revenue_usd (when sites configured)
+        $unmatchedAdUnitSamples = [];
         $lines1 = explode("\n", trim($csv1));
         $headers1 = str_getcsv($lines1[0] ?? '', ',', '"', '');
 
@@ -644,16 +645,14 @@ XML;
                 $impressions = isset($cols[3]) ? (int) $cols[3] : 0;
                 $adRequests = isset($cols[4]) ? (int) $cols[4] : 0;
 
-                // Map ad unit to site name
-                $siteName = '';
-                foreach ($gamSites as $gs) {
-                    if (stripos($adUnitName, $gs['ad_unit_pattern']) !== false) {
-                        $siteName = $gs['site_name'];
-                        break;
+                // Map ad unit to site name. Patterns can contain multiple aliases.
+                $siteName = matchGAMAdUnitSite($adUnitName, $gamSites);
+                if (empty($siteName)) {
+                    $siteName = 'Outros';
+                    if (count($unmatchedAdUnitSamples) < 8) {
+                        $unmatchedAdUnitSamples[] = $adUnitName;
                     }
                 }
-                if (empty($siteName))
-                    $siteName = 'Outros';
 
                 if (!isset($dailySiteTotals[$date]))
                     $dailySiteTotals[$date] = [];
@@ -678,6 +677,10 @@ XML;
                     'ad_requests' => $adRequests,
                 ];
             }
+        }
+
+        if ($hasSites && !empty($unmatchedAdUnitSamples)) {
+            logSync('GAM', 'WARNING', 'ad_unit_unmatched', 'Ad Units sem match em gam_sites: ' . implode(' || ', array_unique($unmatchedAdUnitSamples)));
         }
 
         // ====================================================
@@ -729,8 +732,11 @@ XML;
             logSync('GAM', 'WARNING', 'utm_key_lookup', 'utm_campaign key não encontrado no GAM. Revenue por campanha indisponível.');
         }
 
-        // Step 2b: Run report with custom dimension (utm_campaign)
+        // Step 2b: Run campaign + placement custom criteria reports.
+        // Placements depend on utm_content, so CUSTOM_CRITERIA must run even
+        // when the narrower utm_campaign customDimension report succeeds.
         $campaignRevenue = []; // [date][campaign_id] => ['revenue' => ..., 'impressions' => ..., 'ad_requests' => ...]
+        $placementImported = 0;
 
         if ($utmKeyId) {
             // Try customDimensionKeyIds first (ideal approach)
@@ -784,8 +790,8 @@ XML;
                 logSync('GAM', 'WARNING', 'pass2_customdim_fail', 'customDimensionKeyIds falhou: ' . $e->getMessage() . ' — tentando CUSTOM_CRITERIA...');
             }
 
-            // Fallback: CUSTOM_CRITERIA approach
-            if (!$pass2Success) {
+            // Always run CUSTOM_CRITERIA so utm_content placement rows are available.
+            if ($utmKeyId) {
                 try {
                     $reportXml2b = <<<XML
 <?xml version="1.0" encoding="UTF-8"?>
@@ -842,7 +848,6 @@ XML;
 
             // Parse CSV (works for both approaches)
             // Also captures utm_content placement data in the same loop
-            $placementImported = 0;
             ensurePlacementsTable();
 
             if ($pass2Success && $csv2) {
@@ -1294,6 +1299,46 @@ XML;
     }
 
     return $csvContent;
+}
+
+function matchGAMAdUnitSite($adUnitName, array $gamSites)
+{
+    foreach ($gamSites as $site) {
+        $pattern = trim($site['ad_unit_pattern'] ?? '');
+        if ($pattern === '') {
+            continue;
+        }
+
+        $aliases = preg_split('/[\r\n,;|]+/', $pattern);
+        foreach ($aliases as $alias) {
+            $alias = trim($alias);
+            if ($alias === '') {
+                continue;
+            }
+
+            if (stripos($alias, 'regex:') === 0) {
+                $regex = substr($alias, 6);
+                if ($regex !== '' && @preg_match('/' . str_replace('/', '\/', $regex) . '/i', $adUnitName)) {
+                    return $site['site_name'];
+                }
+                continue;
+            }
+
+            if (strpos($alias, '*') !== false) {
+                $regex = '/^' . str_replace('\*', '.*', preg_quote($alias, '/')) . '$/i';
+                if (preg_match($regex, $adUnitName)) {
+                    return $site['site_name'];
+                }
+                continue;
+            }
+
+            if (stripos($adUnitName, $alias) !== false) {
+                return $site['site_name'];
+            }
+        }
+    }
+
+    return '';
 }
 
 // === Helper functions ===
