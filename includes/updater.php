@@ -380,7 +380,6 @@ function updaterHttpGet(string $url, string $token = '', ?string $targetFile = n
 
 function updaterCurlGet(string $url, array $headers, ?string $targetFile, int $timeout): array {
     $ch = curl_init($url);
-    $fileHandle = null;
 
     $options = [
         CURLOPT_HTTPHEADER => $headers,
@@ -391,18 +390,8 @@ function updaterCurlGet(string $url, array $headers, ?string $targetFile, int $t
         CURLOPT_SSL_VERIFYPEER => true,
         CURLOPT_SSL_VERIFYHOST => 2,
         CURLOPT_HEADER => false,
+        CURLOPT_RETURNTRANSFER => true,
     ];
-
-    if ($targetFile !== null) {
-        $fileHandle = fopen($targetFile, 'wb');
-        if (!$fileHandle) {
-            throw new Exception('Nao foi possivel criar arquivo temporario.');
-        }
-        $options[CURLOPT_FILE] = $fileHandle;
-        $options[CURLOPT_RETURNTRANSFER] = false;
-    } else {
-        $options[CURLOPT_RETURNTRANSFER] = true;
-    }
 
     curl_setopt_array($ch, $options);
     $body = curl_exec($ch);
@@ -410,17 +399,17 @@ function updaterCurlGet(string $url, array $headers, ?string $targetFile, int $t
     $status = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
 
-    if (is_resource($fileHandle)) {
-        fclose($fileHandle);
-    }
-
-    if ($body === false && $targetFile === null) {
+    if ($body === false) {
         throw new Exception('Erro HTTP: ' . $error);
     }
 
     if ($status < 200 || $status >= 300) {
         $detail = $targetFile ? '' : ' - ' . substr((string)$body, 0, 300);
         throw new Exception('GitHub retornou HTTP ' . $status . $detail);
+    }
+
+    if ($targetFile !== null && file_put_contents($targetFile, $body) === false) {
+        throw new Exception('Nao foi possivel salvar o ZIP baixado.');
     }
 
     return [
