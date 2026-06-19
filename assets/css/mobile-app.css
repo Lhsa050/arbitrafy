@@ -1,0 +1,1249 @@
+/* ================================================================
+   Bússola do Tráfego — Mobile App-Like Experience v2
+   Reescrito com foco nos problemas visuais reais.
+   Tudo dentro de media queries — desktop 100% intacto.
+   ================================================================ */
+
+/* ===== GLOBAL MOBILE (≤768px) ===== */
+@media (max-width: 768px) {
+
+    /* --- Reset & Touch --- */
+    * {
+        -webkit-tap-highlight-color: transparent;
+        box-sizing: border-box;
+    }
+
+    html {
+        scroll-behavior: smooth;
+        -webkit-text-size-adjust: 100%;
+        font-size: 14px;
+    }
+
+    body {
+        overscroll-behavior-y: contain;
+    }
+
+    /* --- Forçar nada vaze --- */
+    .app,
+    .main-content,
+    .content {
+        max-width: 100vw !important;
+        overflow-x: hidden !important;
+    }
+
+    /* ============================================================
+       TOPBAR — App Header
+       ============================================================ */
+    .topbar {
+        position: sticky !important;
+        top: 0 !important;
+        z-index: 50 !important;
+        height: auto !important;
+        min-height: 56px !important;
+        padding: 0 16px !important;
+        padding-top: env(safe-area-inset-top, 0px) !important;
+        gap: 10px !important;
+        background: rgba(13, 18, 37, 0.92) !important;
+        backdrop-filter: blur(20px) saturate(1.5) !important;
+        -webkit-backdrop-filter: blur(20px) saturate(1.5) !important;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05) !important;
+        box-shadow: 0 1px 12px rgba(0, 0, 0, 0.35) !important;
+    }
+
+    .mobile-menu-btn {
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        width: 42px !important;
+        height: 42px !important;
+        border-radius: 12px !important;
+        font-size: 20px !important;
+        flex-shrink: 0 !important;
+        background: none !important;
+        border: none !important;
+        color: var(--text-primary) !important;
+    }
+
+    .mobile-menu-btn:active {
+        background: rgba(99, 102, 241, 0.15) !important;
+    }
+
+    .page-title {
+        font-size: 17px !important;
+        font-weight: 700 !important;
+        white-space: nowrap !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        flex: 1 !important;
+        min-width: 0 !important;
+    }
+
+    .topbar-right {
+        gap: 8px !important;
+        flex-shrink: 0 !important;
+    }
+
+    .current-date {
+        display: none !important;
+    }
+
+    .user-badge {
+        font-size: 11px !important;
+        padding: 5px 12px !important;
+        border-radius: 20px !important;
+    }
+
+    /* ============================================================
+       CONTENT AREA
+       ============================================================ */
+    .content {
+        padding: 16px !important;
+    }
+
+    /* Main content no margin */
+    .main-content {
+        margin-left: 0 !important;
+    }
+
+    /* ============================================================
+       SIDEBAR — App Drawer
+       ============================================================ */
+    .sidebar {
+        width: 300px !important;
+        transform: translateX(-100%) !important;
+        transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+        box-shadow: none !important;
+        z-index: 200 !important;
+        position: fixed !important;
+        top: 0 !important;
+        left: 0 !important;
+        height: 100vh !important;
+        background: rgba(13, 18, 37, 0.98) !important;
+        padding-top: env(safe-area-inset-top, 0px) !important;
+    }
+
+    .sidebar.open {
+        transform: translateX(0) !important;
+        box-shadow: 8px 0 40px rgba(0, 0, 0, 0.65) !important;
+    }
+
+    .sidebar-header {
+        padding: 18px 16px !important;
+    }
+
+    .sidebar-nav {
+        padding: 8px 10px !important;
+    }
+
+    .nav-item {
+        padding: 13px 16px !important;
+        min-height: 46px !important;
+        font-size: 14px !important;
+        border-radius: 12px !important;
+        gap: 14px !important;
+        margin-bottom: 2px !important;
+    }
+
+    .nav-item:hover {
+        transform: none !important;
+    }
+
+    .nav-item:active {
+        background: rgba(99, 102, 241, 0.1) !important;
+    }
+
+    .nav-icon {
+        font-size: 20px !important;
+        width: 26px !important;
+    }
+
+    .sidebar-footer {
+        padding: 10px !important;
+    }
+
+    .sidebar-overlay {
+        z-index: 199 !important;
+        background: rgba(0, 0, 0, 0.6) !important;
+        backdrop-filter: blur(3px) !important;
+        -webkit-backdrop-filter: blur(3px) !important;
+    }
+
+    /* ============================================================
+       CARDS — App Native Cards
+       ============================================================ */
+    .cards-grid {
+        display: grid !important;
+        grid-template-columns: 1fr !important;
+        gap: 12px !important;
+        margin-bottom: 16px !important;
+    }
+
+    .card {
+        background: var(--bg-card) !important;
+        border-radius: 16px !important;
+        border: 1px solid rgba(255, 255, 255, 0.06) !important;
+        padding: 18px !important;
+        box-shadow: 0 2px 16px rgba(0, 0, 0, 0.3) !important;
+        position: relative !important;
+        overflow: hidden !important;
+        /* Desabilitar animações no mobile */
+        animation: none !important;
+        transition: none !important;
+    }
+
+    /* Remover hover effects no touch */
+    .card:hover {
+        transform: none !important;
+        box-shadow: 0 2px 16px rgba(0, 0, 0, 0.3) !important;
+        border-color: rgba(255, 255, 255, 0.06) !important;
+    }
+
+    .card:active {
+        background: var(--bg-card-hover) !important;
+    }
+
+    /* Barra colorida no topo — mais sutil no mobile */
+    .card::before {
+        height: 3px !important;
+        border-radius: 0 0 3px 3px !important;
+    }
+
+    .card-label {
+        font-size: 10px !important;
+        font-weight: 700 !important;
+        letter-spacing: 1px !important;
+        margin-bottom: 8px !important;
+        text-transform: uppercase !important;
+        color: var(--text-muted) !important;
+    }
+
+    .card-value {
+        font-size: 24px !important;
+        font-weight: 800 !important;
+        line-height: 1.2 !important;
+        margin-bottom: 6px !important;
+    }
+
+    /* CRITICAL: Texto longo do card-change — truncar com ellipsis */
+    .card-change {
+        font-size: 11px !important;
+        line-height: 1.4 !important;
+        color: var(--text-secondary) !important;
+        overflow: hidden !important;
+        text-overflow: ellipsis !important;
+        display: -webkit-box !important;
+        -webkit-line-clamp: 2 !important;
+        -webkit-box-orient: vertical !important;
+        word-break: break-word !important;
+    }
+
+    .card-icon {
+        font-size: 24px !important;
+        top: 14px !important;
+        right: 14px !important;
+        opacity: 0.08 !important;
+    }
+
+    /* Cards sem animação escalonada */
+    .card:nth-child(2),
+    .card:nth-child(3),
+    .card:nth-child(4) {
+        animation-delay: 0s !important;
+    }
+
+    /* ============================================================
+       BUTTONS — Touch Optimized
+       ============================================================ */
+    .btn {
+        min-height: 46px !important;
+        padding: 12px 18px !important;
+        border-radius: 14px !important;
+        font-size: 14px !important;
+        font-weight: 600 !important;
+        white-space: nowrap !important;
+        transition: transform 0.1s ease !important;
+    }
+
+    .btn:hover {
+        transform: none !important;
+    }
+
+    .btn:active {
+        transform: scale(0.97) !important;
+    }
+
+    .btn-sm {
+        min-height: 40px !important;
+        padding: 8px 16px !important;
+        font-size: 13px !important;
+        border-radius: 12px !important;
+    }
+
+    .btn-icon {
+        min-width: 42px !important;
+        min-height: 42px !important;
+    }
+
+    /* ============================================================
+       FILTERS BAR — Stacked, Compact
+       ============================================================ */
+    .filters-bar {
+        display: flex !important;
+        flex-direction: column !important;
+        gap: 10px !important;
+        align-items: stretch !important;
+        margin-bottom: 16px !important;
+        flex-wrap: nowrap !important;
+    }
+
+    .filters-bar > form,
+    .filters-bar form,
+    .filters-form {
+        display: flex !important;
+        flex-direction: column !important;
+        gap: 10px !important;
+        width: 100% !important;
+    }
+
+    .filter-date-group {
+        display: flex !important;
+        align-items: center !important;
+        gap: 8px !important;
+        width: 100% !important;
+    }
+
+    .filter-date-group label {
+        white-space: nowrap !important;
+        flex-shrink: 0 !important;
+        min-width: 30px !important;
+        font-size: 13px !important;
+    }
+
+    .filter-date-group input {
+        flex: 1 !important;
+    }
+
+    /* Todos os inputs de filtro */
+    .filters-bar .filter-input,
+    .filters-bar select.filter-input,
+    .filters-bar input.filter-input,
+    .filters-bar select,
+    .filters-bar input[type="date"],
+    .filters-bar input[type="text"],
+    .filter-input {
+        max-width: 100% !important;
+        width: 100% !important;
+        min-height: 46px !important;
+        font-size: 14px !important;
+        padding: 12px 16px !important;
+        border-radius: 14px !important;
+        box-sizing: border-box !important;
+        background: var(--bg-card) !important;
+        border: 1px solid rgba(255, 255, 255, 0.08) !important;
+        color: var(--text-primary) !important;
+    }
+
+    .filters-bar > div {
+        display: flex !important;
+        flex-direction: row !important;
+        align-items: center !important;
+        gap: 8px !important;
+        width: 100% !important;
+    }
+
+    .filters-bar > div input[type="date"] {
+        flex: 1 !important;
+    }
+
+    /* Botões dentro de filtros — full width */
+    .filters-bar .btn {
+        width: 100% !important;
+        justify-content: center !important;
+        text-align: center !important;
+        /* Permitir texto do botão de sync quebrar se necessário */
+        white-space: normal !important;
+        word-break: break-word !important;
+        line-height: 1.3 !important;
+    }
+
+    /* Month Scroll — Horizontal scrollable pills */
+    .month-scroll {
+        display: flex !important;
+        gap: 6px !important;
+        overflow-x: auto !important;
+        -webkit-overflow-scrolling: touch !important;
+        scrollbar-width: none !important;
+        padding: 4px 0 !important;
+        flex-shrink: 0 !important;
+    }
+
+    .month-scroll::-webkit-scrollbar {
+        display: none !important;
+    }
+
+    .month-scroll .btn {
+        min-width: 46px !important;
+        width: auto !important;
+        flex-shrink: 0 !important;
+        padding: 8px 14px !important;
+        font-size: 12px !important;
+        min-height: 36px !important;
+        border-radius: 10px !important;
+    }
+
+    /* ============================================================
+       FORM INPUTS — Native Feel
+       ============================================================ */
+    .form-input,
+    .form-select,
+    .form-textarea {
+        min-height: 46px !important;
+        padding: 12px 16px !important;
+        border-radius: 14px !important;
+        font-size: 15px !important;
+        background: var(--bg-input) !important;
+        border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    }
+
+    .form-input:focus,
+    .form-select:focus,
+    .form-textarea:focus {
+        border-color: var(--accent) !important;
+        box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15) !important;
+    }
+
+    .form-label {
+        font-size: 12px !important;
+        margin-bottom: 8px !important;
+    }
+
+    .form-group {
+        margin-bottom: 14px !important;
+    }
+
+    .form-row {
+        grid-template-columns: 1fr !important;
+        gap: 0 !important;
+    }
+
+    .form-inline {
+        flex-direction: column !important;
+        align-items: stretch !important;
+        gap: 10px !important;
+    }
+
+    /* ============================================================
+       TABLES — Horizontal Scroll
+       ============================================================ */
+    .table-container {
+        border-radius: 16px !important;
+        overflow: hidden !important;
+        box-shadow: 0 2px 16px rgba(0, 0, 0, 0.3) !important;
+        margin-bottom: 16px !important;
+        animation: none !important;
+        position: relative !important;
+    }
+
+    .table-header {
+        padding: 14px 16px !important;
+        flex-direction: column !important;
+        align-items: flex-start !important;
+        gap: 10px !important;
+    }
+
+    .table-title {
+        font-size: 15px !important;
+        font-weight: 700 !important;
+    }
+
+    .table-actions {
+        width: 100% !important;
+        display: flex !important;
+        gap: 8px !important;
+        flex-wrap: wrap !important;
+    }
+
+    .table-actions .btn {
+        flex: 1 !important;
+        justify-content: center !important;
+        min-height: 38px !important;
+    }
+
+    .table-scroll {
+        overflow-x: auto !important;
+        -webkit-overflow-scrolling: touch !important;
+    }
+
+    table {
+        min-width: 650px !important;
+    }
+
+    th {
+        padding: 10px 14px !important;
+        font-size: 10px !important;
+        font-weight: 700 !important;
+        white-space: nowrap !important;
+        position: sticky !important;
+        top: 0 !important;
+        z-index: 2 !important;
+        background: var(--bg-secondary) !important;
+    }
+
+    td {
+        padding: 10px 14px !important;
+        font-size: 12px !important;
+        white-space: nowrap !important;
+    }
+
+    .table-footer {
+        padding: 12px 16px !important;
+        flex-direction: column !important;
+        gap: 8px !important;
+        align-items: flex-start !important;
+    }
+
+    /* ============================================================
+       CHART
+       ============================================================ */
+    .chart-container {
+        border-radius: 16px !important;
+        padding: 16px !important;
+        box-shadow: 0 2px 16px rgba(0, 0, 0, 0.3) !important;
+        margin-bottom: 16px !important;
+        animation: none !important;
+        position: relative !important;
+    }
+
+    .chart-header {
+        flex-direction: column !important;
+        align-items: flex-start !important;
+        gap: 6px !important;
+        margin-bottom: 12px !important;
+    }
+
+    .chart-title {
+        font-size: 14px !important;
+        font-weight: 700 !important;
+    }
+
+    /* NÃO colocar height/width no canvas — Chart.js gerencia isso.
+       Usar max-height apenas para limitar. */
+    .chart-canvas {
+        max-height: 280px !important;
+    }
+
+    /* ============================================================
+       KANBAN
+       ============================================================ */
+    .kanban-board {
+        display: flex !important;
+        flex-direction: column !important;
+        gap: 12px !important;
+    }
+
+    .kanban-column {
+        border-radius: 16px !important;
+        box-shadow: 0 2px 16px rgba(0, 0, 0, 0.3) !important;
+        overflow: hidden !important;
+    }
+
+    .kanban-column-header {
+        padding: 14px 16px !important;
+        font-size: 14px !important;
+        font-weight: 700 !important;
+    }
+
+    .kanban-column-count {
+        padding: 3px 10px !important;
+        border-radius: 10px !important;
+    }
+
+    .kanban-cards {
+        padding: 10px !important;
+        max-height: 350px !important;
+        overflow-y: auto !important;
+        -webkit-overflow-scrolling: touch !important;
+    }
+
+    .kanban-card {
+        border-radius: 14px !important;
+        padding: 14px !important;
+        margin-bottom: 8px !important;
+        box-shadow: 0 1px 6px rgba(0, 0, 0, 0.2) !important;
+    }
+
+    .kanban-card:hover {
+        transform: none !important;
+    }
+
+    .kanban-card:active {
+        background: var(--bg-card-hover) !important;
+    }
+
+    .kanban-card-title {
+        font-size: 13px !important;
+        font-weight: 600 !important;
+        margin-bottom: 8px !important;
+        line-height: 1.4 !important;
+    }
+
+    .kanban-card-meta {
+        font-size: 11px !important;
+        gap: 6px !important;
+    }
+
+    /* Botões de ação no kanban card */
+    .kanban-card .btn-sm,
+    .kanban-card .btn-secondary {
+        min-height: 34px !important;
+        padding: 5px 10px !important;
+        font-size: 11px !important;
+        border-radius: 8px !important;
+        width: auto !important;
+    }
+
+    /* ============================================================
+       FINANCIAL GRID
+       ============================================================ */
+    .financial-grid {
+        display: flex !important;
+        flex-direction: column !important;
+        gap: 12px !important;
+    }
+
+    .financial-month {
+        border-radius: 16px !important;
+        box-shadow: 0 2px 16px rgba(0, 0, 0, 0.3) !important;
+        overflow: hidden !important;
+    }
+
+    .financial-month-header {
+        padding: 14px 16px !important;
+        font-size: 14px !important;
+        font-weight: 700 !important;
+        flex-wrap: wrap !important;
+        gap: 8px !important;
+    }
+
+    .financial-month-body {
+        padding: 14px 16px !important;
+    }
+
+    .cost-row {
+        padding: 10px 0 !important;
+        font-size: 13px !important;
+    }
+
+    .cost-row.total {
+        font-size: 14px !important;
+        padding-top: 12px !important;
+    }
+
+    /* ============================================================
+       TWO COLUMNS → Stack
+       ============================================================ */
+    .two-columns {
+        display: flex !important;
+        flex-direction: column !important;
+        gap: 16px !important;
+        grid-template-columns: unset !important;
+    }
+
+    /* ============================================================
+       MODALS — Bottom Sheet
+       ============================================================ */
+    .modal-overlay {
+        padding: 0 !important;
+        align-items: flex-end !important;
+    }
+
+    .modal-overlay.active {
+        display: flex !important;
+    }
+
+    .modal {
+        max-width: 100% !important;
+        width: 100% !important;
+        max-height: 90vh !important;
+        border-radius: 20px 20px 0 0 !important;
+        margin: 0 !important;
+        box-shadow: 0 -8px 40px rgba(0, 0, 0, 0.5) !important;
+    }
+
+    /* Drag indicator */
+    .modal::before {
+        content: '' !important;
+        display: block !important;
+        width: 40px !important;
+        height: 4px !important;
+        background: rgba(255, 255, 255, 0.2) !important;
+        border-radius: 2px !important;
+        margin: 10px auto 0 !important;
+        position: static !important;
+        opacity: 1 !important;
+    }
+
+    .modal-header {
+        padding: 12px 20px !important;
+    }
+
+    .modal-title {
+        font-size: 16px !important;
+        font-weight: 700 !important;
+    }
+
+    .modal-close {
+        width: 38px !important;
+        height: 38px !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        border-radius: 12px !important;
+    }
+
+    .modal-body {
+        padding: 16px 20px !important;
+        overflow-y: auto !important;
+        -webkit-overflow-scrolling: touch !important;
+    }
+
+    .modal-footer {
+        padding: 12px 20px !important;
+    }
+
+    .modal-footer .btn {
+        flex: 1 !important;
+    }
+
+    /* ============================================================
+       TABS
+       ============================================================ */
+    .tabs {
+        display: flex !important;
+        overflow-x: auto !important;
+        -webkit-overflow-scrolling: touch !important;
+        scrollbar-width: none !important;
+        flex-wrap: nowrap !important;
+        gap: 4px !important;
+        margin-bottom: 16px !important;
+    }
+
+    .tabs::-webkit-scrollbar {
+        display: none !important;
+    }
+
+    .tab {
+        white-space: nowrap !important;
+        flex-shrink: 0 !important;
+        padding: 10px 16px !important;
+        font-size: 13px !important;
+        min-height: 42px !important;
+    }
+
+    /* ============================================================
+       ALERTS
+       ============================================================ */
+    .alert {
+        border-radius: 14px !important;
+        padding: 14px 16px !important;
+        font-size: 13px !important;
+        margin-bottom: 12px !important;
+    }
+
+    /* ============================================================
+       BADGES
+       ============================================================ */
+    .badge {
+        font-size: 11px !important;
+        padding: 3px 10px !important;
+        border-radius: 10px !important;
+    }
+
+    /* ============================================================
+       PAGINATION
+       ============================================================ */
+    .pagination {
+        flex-wrap: wrap !important;
+        gap: 6px !important;
+        justify-content: center !important;
+    }
+
+    .pagination a,
+    .pagination span {
+        min-width: 38px !important;
+        min-height: 38px !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        border-radius: 10px !important;
+    }
+
+    /* ============================================================
+       SECTION
+       ============================================================ */
+    .section {
+        margin-bottom: 20px !important;
+    }
+
+    .section-title {
+        font-size: 15px !important;
+        font-weight: 700 !important;
+        margin-bottom: 12px !important;
+    }
+
+    /* ============================================================
+       EMPTY STATE
+       ============================================================ */
+    .empty-state {
+        padding: 36px 20px !important;
+    }
+
+    .empty-state-icon { font-size: 38px !important; }
+    .empty-state-title { font-size: 16px !important; }
+    .empty-state-text { font-size: 13px !important; }
+
+    /* ============================================================
+       UPLOAD AREA
+       ============================================================ */
+    .upload-area {
+        border-radius: 16px !important;
+        padding: 28px 20px !important;
+    }
+
+    .upload-area-icon { font-size: 34px !important; }
+    .upload-area-text { font-size: 14px !important; }
+    .upload-area-hint { font-size: 12px !important; }
+
+    /* ============================================================
+       LOGIN PAGE
+       ============================================================ */
+    .login-page {
+        padding: 20px !important;
+    }
+
+    .login-container {
+        max-width: 100% !important;
+    }
+
+    .login-card {
+        padding: 36px 24px !important;
+        border-radius: 20px !important;
+    }
+
+    .login-logo-icon {
+        width: 60px !important;
+        height: 60px !important;
+        border-radius: 16px !important;
+        font-size: 30px !important;
+    }
+
+    .login-logo-text {
+        font-size: 22px !important;
+    }
+
+    .login-subtitle {
+        font-size: 13px !important;
+        margin-bottom: 28px !important;
+    }
+
+    .login-form-input {
+        min-height: 50px !important;
+        font-size: 15px !important;
+        border-radius: 14px !important;
+    }
+
+    .login-btn {
+        min-height: 50px !important;
+        font-size: 16px !important;
+        border-radius: 14px !important;
+    }
+
+    .login-btn:active {
+        transform: scale(0.98) !important;
+    }
+
+    .login-alert {
+        border-radius: 14px !important;
+        font-size: 13px !important;
+    }
+
+    /* Reduzir efeitos pesados no login mobile */
+    .login-particles span {
+        animation-duration: 20s !important;
+    }
+
+    .login-page::before,
+    .login-page::after {
+        animation: none !important;
+    }
+
+    .login-page::before {
+        width: 280px !important;
+        height: 280px !important;
+    }
+
+    .login-page::after {
+        width: 220px !important;
+        height: 220px !important;
+    }
+
+    /* ============================================================
+       TOOLTIP — OFF on touch
+       ============================================================ */
+    .tooltip::after {
+        display: none !important;
+    }
+
+    /* ============================================================
+       INLINE STYLES OVERRIDES
+       Muitas pages usam style="" inline. Precisamos cobrir isso.
+       ============================================================ */
+
+    /* Cards grid com margin-top inline */
+    .cards-grid[style*="margin-top"] {
+        margin-top: 12px !important;
+    }
+
+    .cards-grid[style*="margin-bottom"] {
+        margin-bottom: 12px !important;
+    }
+
+    /* Card-value com font-size inline */
+    .card-value[style*="font-size"] {
+        font-size: 20px !important;
+    }
+
+    /* chart-title com margin-bottom inline */
+    .chart-title[style*="margin-bottom"] {
+        margin-bottom: 14px !important;
+    }
+
+    /* Buttons com margin-top inline */
+    .btn[style*="margin-top"] {
+        margin-top: 8px !important;
+    }
+
+    /* Section com margin-top inline */
+    .section[style*="margin-top"] {
+        margin-top: 20px !important;
+    }
+
+    /* Form-inline com style inline */
+    .form-inline[style] {
+        flex-direction: column !important;
+        align-items: stretch !important;
+    }
+
+    /* Cost-row inline styles */
+    .cost-row[style] {
+        display: flex !important;
+        justify-content: space-between !important;
+        align-items: center !important;
+    }
+
+    /* ============================================================
+       ANIMATIONS — Disabled for Performance
+       ============================================================ */
+    .card,
+    .chart-container,
+    .table-container {
+        animation: none !important;
+    }
+
+    /* Scrollbar hidden on mobile */
+    .main-content::-webkit-scrollbar {
+        display: none;
+    }
+
+    .main-content {
+        scrollbar-width: none;
+    }
+
+} /* End max-width: 768px */
+
+
+/* ============================================================
+   ≤480px — Mobile Principal
+   ============================================================ */
+@media (max-width: 480px) {
+
+    html {
+        font-size: 14px !important;
+    }
+
+    .content {
+        padding: 14px !important;
+    }
+
+    .topbar {
+        padding: 0 14px !important;
+    }
+
+    .page-title {
+        font-size: 16px !important;
+    }
+
+    .user-badge {
+        display: none !important;
+    }
+
+    /* Cards: 1 coluna */
+    .cards-grid {
+        grid-template-columns: 1fr !important;
+        gap: 10px !important;
+    }
+
+    .card {
+        padding: 16px !important;
+    }
+
+    .card-value {
+        font-size: 22px !important;
+    }
+
+    .card-icon {
+        display: none !important;
+    }
+
+    /* Chart menor mas funcional */
+    .chart-canvas {
+        max-height: 240px !important;
+    }
+
+    /* Tables */
+    th {
+        padding: 8px 12px !important;
+        font-size: 9px !important;
+    }
+
+    td {
+        padding: 8px 12px !important;
+        font-size: 11px !important;
+    }
+
+    /* Financial */
+    .financial-month-header {
+        font-size: 13px !important;
+    }
+
+    /* Kanban */
+    .kanban-cards {
+        max-height: 300px !important;
+    }
+
+    .kanban-card-title {
+        font-size: 13px !important;
+    }
+
+    /* Month buttons menores */
+    .month-scroll .btn {
+        min-width: 42px !important;
+        padding: 6px 12px !important;
+        font-size: 11px !important;
+        min-height: 34px !important;
+    }
+
+    /* Botões genéricos */
+    .btn {
+        font-size: 13px !important;
+        padding: 10px 16px !important;
+        min-height: 44px !important;
+    }
+
+    .btn-sm {
+        min-height: 38px !important;
+    }
+}
+
+
+/* ============================================================
+   ≤390px — Compact Mobile
+   ============================================================ */
+@media (max-width: 390px) {
+
+    .content {
+        padding: 12px !important;
+    }
+
+    .topbar {
+        padding: 0 12px !important;
+        height: 52px !important;
+    }
+
+    .page-title {
+        font-size: 15px !important;
+    }
+
+    .card {
+        padding: 14px !important;
+        border-radius: 14px !important;
+    }
+
+    .card-value {
+        font-size: 20px !important;
+    }
+
+    .card-change {
+        font-size: 10px !important;
+        -webkit-line-clamp: 1 !important;
+    }
+
+    .chart-canvas {
+        max-height: 170px !important;
+    }
+
+    .chart-container {
+        padding: 12px !important;
+    }
+
+    .modal-body {
+        padding: 14px 16px !important;
+    }
+
+    .login-card {
+        padding: 32px 20px !important;
+    }
+
+    .financial-month-body {
+        padding: 12px 14px !important;
+    }
+
+    .cost-row {
+        font-size: 12px !important;
+    }
+
+    .filters-bar .filter-input,
+    .filters-bar select.filter-input,
+    .filters-bar input.filter-input,
+    .filters-bar select,
+    .filters-bar input[type="date"],
+    .filters-bar input[type="text"],
+    .filter-input {
+        min-height: 44px !important;
+        font-size: 13px !important;
+        padding: 10px 14px !important;
+    }
+}
+
+
+/* ============================================================
+   ≤360px — Very Small Phones
+   ============================================================ */
+@media (max-width: 360px) {
+
+    .content {
+        padding: 10px !important;
+    }
+
+    .topbar {
+        padding: 0 10px !important;
+        height: 50px !important;
+    }
+
+    .page-title {
+        font-size: 14px !important;
+    }
+
+    .mobile-menu-btn {
+        width: 38px !important;
+        height: 38px !important;
+    }
+
+    .card {
+        padding: 12px !important;
+        border-radius: 12px !important;
+    }
+
+    .card-value {
+        font-size: 18px !important;
+    }
+
+    .card-label {
+        font-size: 9px !important;
+    }
+
+    .chart-canvas {
+        max-height: 150px !important;
+    }
+
+    .kanban-column-header {
+        padding: 12px !important;
+        font-size: 12px !important;
+    }
+
+    .kanban-card {
+        padding: 10px !important;
+    }
+
+    .financial-month-header {
+        font-size: 12px !important;
+        padding: 12px !important;
+    }
+
+    .login-card {
+        padding: 28px 16px !important;
+    }
+
+    .login-logo-icon {
+        width: 52px !important;
+        height: 52px !important;
+    }
+
+    .login-logo-text {
+        font-size: 20px !important;
+    }
+
+    .login-form-input {
+        min-height: 46px !important;
+        font-size: 14px !important;
+    }
+
+    .login-btn {
+        min-height: 46px !important;
+        font-size: 15px !important;
+    }
+}
+
+
+/* ============================================================
+   Reduced Motion
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+}
+
+/* ============================================================
+   PWA Standalone Mode — Status Bar Safe Area
+   When added to home screen, the app runs fullscreen and
+   env(safe-area-inset-top) may return 0 on Android.
+   Force manual padding so the topbar doesn't overlap the
+   device status bar (clock, battery, signal).
+   ============================================================ */
+@media (display-mode: standalone) and (max-width: 768px) {
+    .topbar {
+        padding-top: max(env(safe-area-inset-top, 0px), 36px) !important;
+    }
+
+    .sidebar {
+        padding-top: max(env(safe-area-inset-top, 0px), 36px) !important;
+    }
+}
+
+/* Also handle iOS standalone (Add to Home Screen) */
+@media (max-width: 768px) {
+    @supports (-webkit-touch-callout: none) {
+        /* iOS-only: use env() which works properly on iOS */
+        .topbar {
+            padding-top: max(env(safe-area-inset-top, 0px), 20px) !important;
+        }
+        .sidebar {
+            padding-top: max(env(safe-area-inset-top, 0px), 20px) !important;
+        }
+    }
+}

@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 280 60" fill="none">
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0a84ff"/>
+      <stop offset="100%" stop-color="#5e5ce6"/>
+    </linearGradient>
+    <linearGradient id="arrow" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#30d158"/>
+      <stop offset="100%" stop-color="#0a84ff"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Icon: abstract "A" with arbitrage arrows -->
+  <g transform="translate(4, 4)">
+    <!-- Diamond/rhombus base shape -->
+    <rect x="6" y="6" width="40" height="40" rx="10" fill="url(#grad)" opacity="0.12"/>
+    <rect x="6" y="6" width="40" height="40" rx="10" stroke="url(#grad)" stroke-width="1.5" fill="none"/>
+
+    <!-- Up arrow (buy) -->
+    <path d="M20 36 L20 18 M14 24 L20 16 L26 24" stroke="url(#arrow)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- Down arrow (sell) -->
+    <path d="M32 16 L32 34 M26 28 L32 36 L38 28" stroke="#bf5af2" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.8"/>
+  </g>
+
+  <!-- Wordmark -->
+  <text x="64" y="40" font-family="Inter, SF Pro Display, -apple-system, Helvetica Neue, sans-serif" font-size="30" font-weight="700" letter-spacing="-1">
+    <tspan fill="#f5f5f7">Arbitra</tspan><tspan fill="url(#grad)">Fy</tspan>
+  </text>
+</svg>
