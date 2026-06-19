@@ -72,6 +72,83 @@ switch ($action) {
         exit;
 }
 
+function extractFBInsightResultMetrics($row)
+{
+    $vizLp = 0;
+    $custoVizLp = 0;
+    $results = 0;
+    $costPerResult = 0;
+    $bestAction = null;
+    $bestSource = 'actions';
+
+    foreach ($row['conversions'] ?? [] as $conv) {
+        if (!$bestAction) {
+            $bestAction = $conv['action_type'] ?? 'conversion';
+            $results = (int) ($conv['value'] ?? 0);
+            $bestSource = 'conversions';
+        }
+    }
+
+    foreach ($row['actions'] ?? [] as $act) {
+        if (($act['action_type'] ?? '') === 'landing_page_view') {
+            $vizLp = (int) ($act['value'] ?? 0);
+        }
+
+        if (!$bestAction && strpos($act['action_type'] ?? '', 'offsite_conversion.custom') === 0) {
+            $bestAction = $act['action_type'];
+            $results = (int) ($act['value'] ?? 0);
+        }
+    }
+
+    if (!$bestAction) {
+        $fallback = ['link_click', 'landing_page_view', 'offsite_conversion.fb_pixel_purchase', 'offsite_conversion.fb_pixel_lead', 'page_engagement'];
+        foreach ($fallback as $fb) {
+            foreach ($row['actions'] ?? [] as $act) {
+                if (($act['action_type'] ?? '') === $fb) {
+                    $bestAction = $fb;
+                    $results = (int) ($act['value'] ?? 0);
+                    break 2;
+                }
+            }
+        }
+    }
+
+    if ($bestAction) {
+        $costArray = ($bestSource === 'conversions')
+            ? ($row['cost_per_conversion'] ?? [])
+            : ($row['cost_per_action_type'] ?? []);
+        foreach ($costArray as $cpa) {
+            if (($cpa['action_type'] ?? '') === $bestAction) {
+                $costPerResult = (float) ($cpa['value'] ?? 0);
+                break;
+            }
+        }
+    }
+
+    foreach ($row['cost_per_action_type'] ?? [] as $cpa) {
+        if (($cpa['action_type'] ?? '') === 'landing_page_view') {
+            $custoVizLp = (float) ($cpa['value'] ?? 0);
+            break;
+        }
+    }
+
+    return [
+        'viz_lp' => $vizLp,
+        'custo_viz_lp' => $custoVizLp,
+        'results' => $results,
+        'cost_per_result' => $costPerResult,
+    ];
+}
+
+function parseFBHourlyStart($label)
+{
+    if (preg_match('/^(\d{1,2})/', (string) $label, $matches)) {
+        $hour = (int) $matches[1];
+        return max(0, min(23, $hour));
+    }
+    return 0;
+}
+
 function doSyncFB()
 {
     $syncStart = microtime(true);
@@ -393,20 +470,130 @@ function doSyncFB()
         logSync('FB', 'WARNING', 'device_error', 'Erro no device sync: ' . $e->getMessage());
     }
 
+    // ====================================================
+    // Hourly breakdown sync (advertiser timezone)
+    // Uses FB API breakdowns=hourly_stats_aggregated_by_advertiser_time_zone
+    // ====================================================
+    $hourlyCount = 0;
+    try {
+        if (!function_exists('ensureFBHourlyTable')) {
+            logSync('FB', 'WARNING', 'hourly_sync', 'Funcao ensureFBHourlyTable nao encontrada. Atualize o helpers.php.');
+            throw new Exception('ensureFBHourlyTable nao disponivel');
+        }
+        ensureFBHourlyTable();
+
+        foreach ($accounts as $account) {
+            $accountId = $account['id'];
+            $accountName = $account['name'];
+            if (strpos($accountId, 'act_') !== 0)
+                $accountId = 'act_' . $accountId;
+
+            $hourFields = 'date_start,campaign_id,campaign_name,spend,impressions,inline_link_clicks,actions,conversions,cost_per_action_type,cost_per_conversion,cost_per_inline_link_click,inline_link_click_ctr';
+            $hourUrl = "https://graph.facebook.com/{$version}/{$accountId}/insights?" . http_build_query([
+                'level' => 'campaign',
+                'fields' => $hourFields,
+                'breakdowns' => 'hourly_stats_aggregated_by_advertiser_time_zone',
+                'time_increment' => 1,
+                'time_range' => json_encode(['since' => $since, 'until' => $until]),
+                'limit' => 500,
+                'access_token' => $token,
+            ]);
+
+            $hourResult = curlGet($hourUrl);
+            if (isset($hourResult['error'])) {
+                logSync('FB', 'WARNING', 'hourly_api_full', $accountName . ': tentando sync horario sem conversoes - ' . ($hourResult['error']['message'] ?? 'Erro no hourly breakdown'));
+
+                $leanHourFields = 'date_start,campaign_id,campaign_name,spend,impressions,inline_link_clicks,inline_link_click_ctr,cost_per_inline_link_click';
+                $hourUrl = "https://graph.facebook.com/{$version}/{$accountId}/insights?" . http_build_query([
+                    'level' => 'campaign',
+                    'fields' => $leanHourFields,
+                    'breakdowns' => 'hourly_stats_aggregated_by_advertiser_time_zone',
+                    'time_increment' => 1,
+                    'time_range' => json_encode(['since' => $since, 'until' => $until]),
+                    'limit' => 500,
+                    'access_token' => $token,
+                ]);
+                $hourResult = curlGet($hourUrl);
+            }
+
+            if (isset($hourResult['error'])) {
+                logSync('FB', 'WARNING', 'hourly_api', $accountName . ': ' . ($hourResult['error']['message'] ?? 'Erro no hourly breakdown'));
+                continue;
+            }
+
+            $hourAllData = $hourResult['data'] ?? [];
+            while (isset($hourResult['paging']['next'])) {
+                $hourResult = curlGet($hourResult['paging']['next']);
+                if (isset($hourResult['data'])) {
+                    $hourAllData = array_merge($hourAllData, $hourResult['data']);
+                }
+            }
+
+            foreach ($hourAllData as $hourRow) {
+                $metrics = extractFBInsightResultMetrics($hourRow);
+                $spend = (float) ($hourRow['spend'] ?? 0);
+                $impressions = (int) ($hourRow['impressions'] ?? 0);
+                $clicks = (int) ($hourRow['inline_link_clicks'] ?? 0);
+                $results = (int) ($metrics['results'] ?? 0);
+
+                if ($spend <= 0 && $impressions <= 0 && $clicks <= 0 && $results <= 0) {
+                    continue;
+                }
+
+                $hourLabel = $hourRow['hourly_stats_aggregated_by_advertiser_time_zone'] ?? '';
+                $hourStart = parseFBHourlyStart($hourLabel);
+                if ($hourLabel === '') {
+                    $hourLabel = sprintf('%02d:00:00 - %02d:59:59', $hourStart, $hourStart);
+                }
+
+                $cpc = (float) ($hourRow['cost_per_inline_link_click'] ?? 0);
+                if ($cpc <= 0 && $clicks > 0) {
+                    $cpc = $spend / $clicks;
+                }
+                $ctr = (float) ($hourRow['inline_link_click_ctr'] ?? 0);
+                if ($ctr <= 0 && $impressions > 0) {
+                    $ctr = ($clicks / $impressions) * 100;
+                }
+                $cpm = $impressions > 0 ? ($spend / $impressions) * 1000 : 0;
+
+                upsert('fb_hourly', [
+                    'date' => $hourRow['date_start'],
+                    'hour_start' => $hourStart,
+                    'hour_label' => $hourLabel,
+                    'campaign_id' => $hourRow['campaign_id'],
+                    'campaign_name' => $hourRow['campaign_name'] ?? '',
+                    'account_name' => $accountName,
+                    'spend' => $spend,
+                    'impressions' => $impressions,
+                    'clicks' => $clicks,
+                    'results' => $results,
+                    'cpc' => $cpc,
+                    'ctr' => $ctr,
+                    'cpm' => $cpm,
+                ], ['date', 'hour_start', 'campaign_id', 'account_name']);
+                $hourlyCount++;
+            }
+        }
+        logSync('FB', 'INFO', 'hourly_sync', "FB hourly sync: {$hourlyCount} registros importados");
+    } catch (Exception $e) {
+        logSync('FB', 'WARNING', 'hourly_error', 'Erro no hourly sync: ' . $e->getMessage());
+    }
+
     $durationMs = round((microtime(true) - $syncStart) * 1000);
 
     $response = [
         'success' => true,
-        'message' => "FB sincronizado! {$totalImported} registros, {$placementCount} placements, {$deviceCount} devices.",
+        'message' => "FB sincronizado! {$totalImported} registros, {$placementCount} placements, {$deviceCount} devices, {$hourlyCount} horas.",
         'imported' => $totalImported,
         'placements' => $placementCount,
         'devices' => $deviceCount,
+        'hourly' => $hourlyCount,
     ];
     if (!empty($errors)) {
         $response['warnings'] = $errors;
-        logSync('FB', 'WARNING', 'sync_complete', "FB sync com avisos: {$totalImported} registros, {$placementCount} placements, {$deviceCount} devices, " . count($errors) . " erros", implode("\n", $errors), null, $durationMs);
+        logSync('FB', 'WARNING', 'sync_complete', "FB sync com avisos: {$totalImported} registros, {$placementCount} placements, {$deviceCount} devices, {$hourlyCount} horas, " . count($errors) . " erros", implode("\n", $errors), null, $durationMs);
     } else {
-        logSync('FB', 'INFO', 'sync_complete', "FB sync OK: {$totalImported} registros, {$placementCount} placements, {$deviceCount} devices", null, null, $durationMs);
+        logSync('FB', 'INFO', 'sync_complete', "FB sync OK: {$totalImported} registros, {$placementCount} placements, {$deviceCount} devices, {$hourlyCount} horas", null, null, $durationMs);
     }
     echo json_encode($response);
     exit;

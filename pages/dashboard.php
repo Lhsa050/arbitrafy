@@ -241,6 +241,138 @@ $revLast = fetchOne("
     FROM revenue {$revLastWhere}
 ", $revLastParams);
 $revLastBRL = ($revLast['total'] ?? 0) * $cotacao;
+
+// --- Hourly FB performance (same dashboard filters) ---
+$hourlyRaw = [];
+try {
+    if (function_exists('ensureFBHourlyTable')) {
+        ensureFBHourlyTable();
+    }
+
+    $hourWhere = "WHERE fh.date BETWEEN ? AND ?";
+    $hourParams = [$monthStart, $monthEnd];
+
+    if ($dashAccount) {
+        $hourWhere .= " AND fh.account_name = ?";
+        $hourParams[] = $dashAccount;
+    }
+    if ($searchCampaign) {
+        $hourWhere .= " AND (fh.campaign_name LIKE ? OR fh.campaign_id LIKE ?)";
+        $hourParams[] = "%{$searchCampaign}%";
+        $hourParams[] = "%{$searchCampaign}%";
+    }
+    if ($dashSite) {
+        $hourWhere .= " AND EXISTS (
+            SELECT 1 FROM revenue r
+            WHERE r.date = fh.date
+              AND r.site_name = ?
+              AND (r.utm_campaign = fh.campaign_id OR r.campaign_id = fh.campaign_id)
+        )";
+        $hourParams[] = $dashSite;
+    }
+
+    $hourlyRaw = fetchAll("
+        SELECT fh.hour_start,
+               MIN(fh.hour_label) as hour_label,
+               SUM(fh.spend) as spend,
+               SUM(fh.impressions) as impressions,
+               SUM(fh.clicks) as clicks,
+               SUM(fh.results) as results,
+               COUNT(DISTINCT fh.date) as days_count,
+               COUNT(DISTINCT fh.campaign_id) as campaigns
+        FROM fb_hourly fh
+        {$hourWhere}
+        GROUP BY fh.hour_start
+        ORDER BY fh.hour_start
+    ", $hourParams);
+} catch (Exception $e) {
+    $hourlyRaw = [];
+}
+
+$hourlyChartData = [];
+for ($hour = 0; $hour < 24; $hour++) {
+    $hourlyChartData[$hour] = [
+        'hour' => sprintf('%02dh', $hour),
+        'hour_start' => $hour,
+        'hour_label' => sprintf('%02d:00 - %02d:59', $hour, $hour),
+        'spend' => 0,
+        'impressions' => 0,
+        'clicks' => 0,
+        'results' => 0,
+        'cpc' => 0,
+        'ctr' => 0,
+        'cpm' => 0,
+        'cost_per_result' => 0,
+        'days_count' => 0,
+        'campaigns' => 0,
+    ];
+}
+
+foreach ($hourlyRaw as $hr) {
+    $hour = max(0, min(23, (int)($hr['hour_start'] ?? 0)));
+    $spend = (float)($hr['spend'] ?? 0);
+    $impressions = (int)($hr['impressions'] ?? 0);
+    $clicks = (int)($hr['clicks'] ?? 0);
+    $results = (int)($hr['results'] ?? 0);
+
+    $hourlyChartData[$hour] = [
+        'hour' => sprintf('%02dh', $hour),
+        'hour_start' => $hour,
+        'hour_label' => $hr['hour_label'] ?: sprintf('%02d:00 - %02d:59', $hour, $hour),
+        'spend' => $spend,
+        'impressions' => $impressions,
+        'clicks' => $clicks,
+        'results' => $results,
+        'cpc' => $clicks > 0 ? $spend / $clicks : 0,
+        'ctr' => $impressions > 0 ? ($clicks / $impressions) * 100 : 0,
+        'cpm' => $impressions > 0 ? ($spend / $impressions) * 1000 : 0,
+        'cost_per_result' => $results > 0 ? $spend / $results : 0,
+        'days_count' => (int)($hr['days_count'] ?? 0),
+        'campaigns' => (int)($hr['campaigns'] ?? 0),
+    ];
+}
+$hourlyChartData = array_values($hourlyChartData);
+
+$hourlyTotalResults = array_sum(array_column($hourlyChartData, 'results'));
+$hourlyTotalClicks = array_sum(array_column($hourlyChartData, 'clicks'));
+$hourlyTotalSpend = array_sum(array_column($hourlyChartData, 'spend'));
+$hourlyHasData = ($hourlyTotalSpend > 0 || $hourlyTotalClicks > 0 || $hourlyTotalResults > 0);
+$hourlyMetricLabel = $hourlyTotalResults > 0 ? 'Resultados' : 'Cliques';
+$bestHour = null;
+$volumeHour = null;
+$lowestCpcHour = null;
+
+foreach ($hourlyChartData as $hourRow) {
+    if ($hourRow['spend'] <= 0 && $hourRow['clicks'] <= 0 && $hourRow['results'] <= 0) {
+        continue;
+    }
+
+    if ($hourlyTotalResults > 0) {
+        if (!$bestHour
+            || $hourRow['results'] > $bestHour['results']
+            || ($hourRow['results'] === $bestHour['results']
+                && $hourRow['results'] > 0
+                && ($bestHour['cost_per_result'] <= 0 || $hourRow['cost_per_result'] < $bestHour['cost_per_result']))) {
+            $bestHour = $hourRow;
+        }
+    } elseif ($hourRow['clicks'] > 0) {
+        if (!$bestHour || $hourRow['cpc'] < $bestHour['cpc']) {
+            $bestHour = $hourRow;
+        }
+    }
+
+    if (!$volumeHour || $hourRow['clicks'] > $volumeHour['clicks']) {
+        $volumeHour = $hourRow;
+    }
+    if ($hourRow['clicks'] > 0 && (!$lowestCpcHour || $hourRow['cpc'] < $lowestCpcHour['cpc'])) {
+        $lowestCpcHour = $hourRow;
+    }
+}
+
+if (!$bestHour) {
+    $bestHour = $volumeHour;
+}
+
 $lastDateLabel = formatDate($lastDate);
 
 // Build filter URL helper
@@ -342,6 +474,37 @@ ob_start();
         <span class="chart-title">📊 Investimento vs Receita BRL vs Lucro</span>
     </div>
     <canvas id="compassChart" class="chart-canvas"></canvas>
+</div>
+
+<!-- Hourly Results Chart -->
+<div class="chart-container">
+    <div class="chart-header" style="align-items:flex-start;gap:12px;flex-wrap:wrap;">
+        <span class="chart-title">Resultados por hora</span>
+        <?php if ($hourlyHasData): ?>
+        <div class="table-actions" style="display:flex;gap:8px;flex-wrap:wrap;">
+            <?php if ($bestHour): ?>
+            <span class="badge badge-blue">
+                <?= $hourlyTotalResults > 0 ? 'Melhor resultado' : 'Melhor CPC' ?>:
+                <?= sanitize($bestHour['hour']) ?>
+            </span>
+            <?php endif; ?>
+            <?php if ($volumeHour): ?>
+            <span class="badge badge-green">Mais cliques: <?= sanitize($volumeHour['hour']) ?> (<?= formatNumber($volumeHour['clicks']) ?>)</span>
+            <?php endif; ?>
+            <?php if ($lowestCpcHour): ?>
+            <span class="badge badge-yellow">Menor CPC: <?= sanitize($lowestCpcHour['hour']) ?> (<?= formatMoney($lowestCpcHour['cpc']) ?>)</span>
+            <?php endif; ?>
+        </div>
+        <?php endif; ?>
+    </div>
+    <?php if ($hourlyHasData): ?>
+    <canvas id="hourlyResultsChart" class="chart-canvas"></canvas>
+    <?php else: ?>
+    <div class="empty-state" style="padding:32px 16px;">
+        <div class="empty-state-title">Nenhum dado por hora encontrado</div>
+        <div class="empty-state-text">Clique em Sync para importar o breakdown horario do Facebook neste periodo.</div>
+    </div>
+    <?php endif; ?>
 </div>
 
 <?php if ($viewMode === 'campaign'): ?>
@@ -471,63 +634,158 @@ ob_start();
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
+    const money = value => 'R$ ' + (Number(value) || 0).toFixed(2);
+
     // Sort chart data by date always
     const data = <?= json_encode($monthlyData) ?>;
-    if (data.length === 0) return;
-    
-    data.sort((a, b) => a.date.localeCompare(b.date));
+    if (data.length > 0) {
+        data.sort((a, b) => a.date.localeCompare(b.date));
 
-    const ctx = document.getElementById('compassChart');
-    new Chart(ctx, {
-        type: 'line',
-        data: {
-            labels: data.map(d => d.date.split('-').reverse().slice(0,2).join('/')),
-            datasets: [
-                {
-                    label: 'Investimento FB',
-                    data: data.map(d => parseFloat(d.investimento) || 0),
-                    borderColor: '#0a84ff',
-                    backgroundColor: 'rgba(10, 132, 255, 0.08)',
-                    fill: true,
-                    tension: 0.4
+        const ctx = document.getElementById('compassChart');
+        if (ctx) {
+            new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: data.map(d => d.date.split('-').reverse().slice(0,2).join('/')),
+                    datasets: [
+                        {
+                            label: 'Investimento FB',
+                            data: data.map(d => parseFloat(d.investimento) || 0),
+                            borderColor: '#0a84ff',
+                            backgroundColor: 'rgba(10, 132, 255, 0.08)',
+                            fill: true,
+                            tension: 0.4
+                        },
+                        {
+                            label: 'Receita BRL',
+                            data: data.map(d => parseFloat(d.receita_brl) || 0),
+                            borderColor: '#30d158',
+                            backgroundColor: 'rgba(48, 209, 88, 0.08)',
+                            fill: true,
+                            tension: 0.4
+                        },
+                        {
+                            label: 'Lucro',
+                            data: data.map(d => parseFloat(d.lucro) || 0),
+                            borderColor: '#ffd60a',
+                            backgroundColor: 'rgba(255, 214, 10, 0.08)',
+                            fill: true,
+                            tension: 0.4
+                        }
+                    ]
                 },
-                {
-                    label: 'Receita BRL',
-                    data: data.map(d => parseFloat(d.receita_brl) || 0),
-                    borderColor: '#30d158',
-                    backgroundColor: 'rgba(48, 209, 88, 0.08)',
-                    fill: true,
-                    tension: 0.4
-                },
-                {
-                    label: 'Lucro',
-                    data: data.map(d => parseFloat(d.lucro) || 0),
-                    borderColor: '#ffd60a',
-                    backgroundColor: 'rgba(255, 214, 10, 0.08)',
-                    fill: true,
-                    tension: 0.4
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { labels: { color: '#98989f', font: { family: 'Inter', weight: '500' } } },
+                        tooltip: {
+                            callbacks: {
+                                label: function(ctx) {
+                                    return ctx.dataset.label + ': ' + money(ctx.parsed.y);
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#636366' } },
+                        y: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#636366' } }
+                    }
                 }
-            ]
-        },
-        options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            plugins: {
-                legend: { labels: { color: '#98989f', font: { family: 'Inter', weight: '500' } } },
-                tooltip: {
-                    callbacks: {
-                        label: function(ctx) {
-                            return ctx.dataset.label + ': R$ ' + ctx.parsed.y.toFixed(2);
+            });
+        }
+    }
+
+    const hourlyData = <?= json_encode($hourlyChartData) ?>;
+    const hourlyMetricLabel = <?= json_encode($hourlyMetricLabel) ?>;
+    const hasHourlyResults = <?= $hourlyTotalResults > 0 ? 'true' : 'false' ?>;
+    const hourlyCtx = document.getElementById('hourlyResultsChart');
+
+    if (hourlyCtx && hourlyData.length > 0) {
+        new Chart(hourlyCtx, {
+            type: 'bar',
+            data: {
+                labels: hourlyData.map(d => d.hour),
+                datasets: [
+                    {
+                        label: hourlyMetricLabel,
+                        data: hourlyData.map(d => hasHourlyResults ? (Number(d.results) || 0) : (Number(d.clicks) || 0)),
+                        backgroundColor: 'rgba(10, 132, 255, 0.55)',
+                        borderColor: '#0a84ff',
+                        borderWidth: 1,
+                        borderRadius: 4,
+                        yAxisID: 'y'
+                    },
+                    {
+                        type: 'line',
+                        label: 'Gasto FB',
+                        data: hourlyData.map(d => Number(d.spend) || 0),
+                        borderColor: '#ff9f0a',
+                        backgroundColor: 'rgba(255, 159, 10, 0.12)',
+                        pointRadius: 3,
+                        tension: 0.35,
+                        hidden: true,
+                        yAxisID: 'y1'
+                    },
+                    {
+                        type: 'line',
+                        label: 'CPC',
+                        data: hourlyData.map(d => Number(d.cpc) || 0),
+                        borderColor: '#30d158',
+                        backgroundColor: 'rgba(48, 209, 88, 0.12)',
+                        pointRadius: 3,
+                        tension: 0.35,
+                        yAxisID: 'y1'
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: { mode: 'index', intersect: false },
+                plugins: {
+                    legend: { labels: { color: '#98989f', font: { family: 'Inter', weight: '500' } } },
+                    tooltip: {
+                        callbacks: {
+                            label: function(ctx) {
+                                if (ctx.dataset.label === 'Gasto FB' || ctx.dataset.label === 'CPC') {
+                                    return ctx.dataset.label + ': ' + money(ctx.parsed.y);
+                                }
+                                return ctx.dataset.label + ': ' + (Number(ctx.parsed.y) || 0).toLocaleString('pt-BR');
+                            },
+                            afterBody: function(items) {
+                                const item = items[0];
+                                const hour = hourlyData[item.dataIndex] || {};
+                                return [
+                                    'Impressões: ' + (Number(hour.impressions) || 0).toLocaleString('pt-BR'),
+                                    'Cliques: ' + (Number(hour.clicks) || 0).toLocaleString('pt-BR'),
+                                    'CTR: ' + (Number(hour.ctr) || 0).toFixed(2) + '%'
+                                ];
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#636366', maxRotation: 0 } },
+                    y: {
+                        beginAtZero: true,
+                        grid: { color: 'rgba(255,255,255,0.04)' },
+                        ticks: { color: '#636366' },
+                        title: { display: true, text: hourlyMetricLabel, color: '#98989f' }
+                    },
+                    y1: {
+                        beginAtZero: true,
+                        position: 'right',
+                        grid: { drawOnChartArea: false },
+                        ticks: {
+                            color: '#636366',
+                            callback: value => money(value)
                         }
                     }
                 }
-            },
-            scales: {
-                x: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#636366' } },
-                y: { grid: { color: 'rgba(255,255,255,0.04)' }, ticks: { color: '#636366' } }
             }
-        }
-    });
+        });
+    }
 });
 
 
@@ -572,7 +830,7 @@ async function syncAll() {
             // GA4 not configured — skip silently
         }
         
-        const fbMsg = fbData.success ? `FB: ${fbData.imported} registros` : `FB: erro`;
+        const fbMsg = fbData.success ? `FB: ${fbData.imported} registros, ${fbData.hourly || 0} horas` : `FB: erro`;
         const gamMsg = gamData.success ? `GAM: ${gamData.imported} registros` : `GAM: erro`;
         
         status.textContent = `✅ ${fbMsg} | ${gamMsg}${gadsMsg}${ga4Msg}`;

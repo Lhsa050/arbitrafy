@@ -338,6 +338,59 @@ function ensureFBDevicesTable() {
 }
 
 /**
+ * Ensure fb_hourly table exists (Facebook campaign performance per hour)
+ */
+function ensureFBHourlyTable() {
+    static $created = false;
+    if ($created) return;
+
+    try {
+        if (defined('DB_TYPE') && DB_TYPE === 'mysql') {
+            getDB()->exec("CREATE TABLE IF NOT EXISTS fb_hourly (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                date DATE NOT NULL,
+                hour_start TINYINT NOT NULL DEFAULT 0,
+                hour_label VARCHAR(30) NOT NULL DEFAULT '',
+                campaign_id VARCHAR(50) NOT NULL,
+                campaign_name VARCHAR(255) DEFAULT '',
+                account_name VARCHAR(100) DEFAULT '',
+                spend DECIMAL(12,2) DEFAULT 0,
+                impressions INT DEFAULT 0,
+                clicks INT DEFAULT 0,
+                results INT DEFAULT 0,
+                cpc DECIMAL(10,6) DEFAULT 0,
+                ctr DECIMAL(10,6) DEFAULT 0,
+                cpm DECIMAL(10,6) DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY unique_fb_hourly (date, hour_start, campaign_id, account_name)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        } else {
+            getDB()->exec("CREATE TABLE IF NOT EXISTS fb_hourly (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date DATE NOT NULL,
+                hour_start INTEGER NOT NULL DEFAULT 0,
+                hour_label VARCHAR(30) NOT NULL DEFAULT '',
+                campaign_id VARCHAR(50) NOT NULL,
+                campaign_name VARCHAR(255) DEFAULT '',
+                account_name VARCHAR(100) DEFAULT '',
+                spend DECIMAL(12,2) DEFAULT 0,
+                impressions INTEGER DEFAULT 0,
+                clicks INTEGER DEFAULT 0,
+                results INTEGER DEFAULT 0,
+                cpc DECIMAL(10,6) DEFAULT 0,
+                ctr DECIMAL(10,6) DEFAULT 0,
+                cpm DECIMAL(10,6) DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(date, hour_start, campaign_id, account_name)
+            )");
+        }
+        $created = true;
+    } catch (Exception $e) {
+        // Silently fail
+    }
+}
+
+/**
  * Ensure revenue_devices table exists (GAM revenue per campaign per device category)
  */
 function ensureRevenueDevicesTable() {
