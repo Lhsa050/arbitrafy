@@ -321,47 +321,64 @@ function handleSaveSelection() {
  * Quick connection test without running the full sync.
  */
 function handleTestConnection($version) {
+    $mode = $_GET['mode'] ?? 'auto';
+    if (!in_array($mode, ['auto', 'oauth', 'manual'], true)) {
+        $mode = 'auto';
+    }
+
     $checks = [];
     $totalAccounts = 0;
     $okAccounts = 0;
 
-    try {
-        $connections = fetchAll("SELECT * FROM fb_connections WHERE status = 'active' ORDER BY connected_at DESC");
-    } catch (Exception $e) {
-        $connections = [];
-    }
-
-    foreach ($connections as $conn) {
-        $check = testFBTokenAndAccounts($version, $conn['access_token'], json_decode($conn['selected_accounts'] ?? '[]', true) ?: [], [
-            'source' => 'oauth',
-            'name' => $conn['fb_user_name'] ?? 'Facebook OAuth',
-            'expires_at' => $conn['token_expires_at'] ?? null,
-        ]);
-
-        if (!$check['token_ok'] && !empty($check['is_expired'])) {
-            try {
-                update('fb_connections', [
-                    'status' => 'expired',
-                    'updated_at' => date('Y-m-d H:i:s'),
-                ], 'id = ?', [$conn['id']]);
-            } catch (Exception $e) {
-            }
+    if ($mode !== 'manual') {
+        try {
+            $connections = fetchAll("SELECT * FROM fb_connections WHERE status = 'active' ORDER BY connected_at DESC");
+        } catch (Exception $e) {
+            $connections = [];
         }
 
-        $checks[] = $check;
-        $totalAccounts += $check['accounts_checked'];
-        $okAccounts += $check['accounts_ok'];
+        foreach ($connections as $conn) {
+            $check = testFBTokenAndAccounts($version, $conn['access_token'], json_decode($conn['selected_accounts'] ?? '[]', true) ?: [], [
+                'source' => 'oauth',
+                'name' => $conn['fb_user_name'] ?? 'Facebook OAuth',
+                'expires_at' => $conn['token_expires_at'] ?? null,
+            ]);
+
+            if (!$check['token_ok'] && !empty($check['is_expired'])) {
+                try {
+                    update('fb_connections', [
+                        'status' => 'expired',
+                        'updated_at' => date('Y-m-d H:i:s'),
+                    ], 'id = ?', [$conn['id']]);
+                } catch (Exception $e) {
+                }
+            }
+
+            $checks[] = $check;
+            $totalAccounts += $check['accounts_checked'];
+            $okAccounts += $check['accounts_ok'];
+        }
     }
 
-    if (empty($checks)) {
+    $hasWorkingOAuth = false;
+    foreach ($checks as $check) {
+        if (!empty($check['token_ok']) && (int)$check['accounts_ok'] > 0) {
+            $hasWorkingOAuth = true;
+            break;
+        }
+    }
+
+    if ($mode === 'manual' || ($mode === 'auto' && !$hasWorkingOAuth)) {
         $manualToken = getSetting('fb_access_token', '');
         $manualAccounts = json_decode(getSetting('fb_ad_accounts', '[]'), true) ?: [];
 
         if (empty($manualToken) || empty($manualAccounts)) {
             jsonResponse([
                 'success' => false,
-                'message' => 'Nenhuma conexao Facebook ativa ou token manual configurado.',
-                'checks' => [],
+                'message' => $mode === 'manual'
+                    ? 'Token manual ou contas manuais nao configurados.'
+                    : 'Nenhuma conexao Facebook ativa ou token manual configurado.',
+                'checks' => $checks,
             ], 400);
         }
 
@@ -386,7 +403,9 @@ function handleTestConnection($version) {
     $success = $tokenOk && $okAccounts > 0;
     $message = $success
         ? "Conexao OK: {$okAccounts}/{$totalAccounts} conta(s) de anuncio acessivel(is)."
-        : 'Conexao Facebook com problema. Reconecte a conta ou atualize o token manual.';
+        : ($mode === 'manual'
+            ? 'Token manual com problema. Gere um novo token e confira as contas manuais.'
+            : 'Conexao Facebook com problema. Reconecte a conta ou atualize o token manual.');
 
     jsonResponse([
         'success' => $success,

@@ -250,8 +250,12 @@ $fbSvg = '<svg viewBox="0 0 24 24" width="18" height="18" xmlns="http://www.w3.o
                     <option <?= $fbVersion === 'v19.0' ? 'selected' : '' ?>>v19.0</option>
                 </select>
             </div>
-            <button type="submit" class="btn btn-secondary btn-sm">💾 Salvar Token</button>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                <button type="submit" class="btn btn-secondary btn-sm">💾 Salvar Token</button>
+                <button type="button" class="btn btn-secondary btn-sm" id="btnTestFBManualConnection" onclick="testFacebookConnection('manual')">TESTAR CONEXÃO MANUAL</button>
+            </div>
         </form>
+        <div id="fbManualTestStatus" style="margin-top:12px;display:none;"></div>
 
         <!-- Contas manuais -->
         <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:16px;">
@@ -302,19 +306,22 @@ function escapeHtml(value) {
         .replace(/'/g, '&#039;');
 }
 
-async function testFacebookConnection() {
-    const btn = document.getElementById('btnTestFBConnection');
-    const status = document.getElementById('fbTestStatus');
+async function testFacebookConnection(mode = 'auto') {
+    const isManual = mode === 'manual';
+    const btn = document.getElementById(isManual ? 'btnTestFBManualConnection' : 'btnTestFBConnection');
+    const status = document.getElementById(isManual ? 'fbManualTestStatus' : 'fbTestStatus');
+    const idleText = isManual ? 'TESTAR CONEXÃO MANUAL' : 'TESTAR CONEXÃO';
     if (!btn || !status) return;
 
     btn.disabled = true;
     btn.textContent = 'TESTANDO...';
     status.style.display = 'block';
     status.className = 'alert alert-warning';
-    status.innerHTML = 'Testando conexão com Facebook...';
+    status.innerHTML = isManual ? 'Testando token manual do Facebook...' : 'Testando conexão com Facebook...';
 
     try {
-        const res = await fetch('/api/fb-auth.php?action=test_connection', {
+        const url = `/api/fb-auth.php?action=test_connection&mode=${encodeURIComponent(mode)}`;
+        const res = await fetch(url, {
             headers: { 'Accept': 'application/json' }
         });
         const data = await res.json();
@@ -338,7 +345,7 @@ async function testFacebookConnection() {
         status.innerHTML = `<strong>Erro no teste</strong><br>${escapeHtml(e.message)}`;
     } finally {
         btn.disabled = false;
-        btn.textContent = 'TESTAR CONEXÃO';
+        btn.textContent = idleText;
     }
 }
 </script>
