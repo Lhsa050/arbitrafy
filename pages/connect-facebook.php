@@ -54,6 +54,9 @@ $fbAppSecret = getSetting('fb_app_secret', '');
 $fbToken = getSetting('fb_access_token', '');
 $fbVersion = getSetting('fb_api_version', 'v21.0');
 $fbAccounts = json_decode(getSetting('fb_ad_accounts', '[]'), true) ?: [];
+$fbScheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+$fbHost = $_SERVER['HTTP_HOST'] ?? 'localhost';
+$fbRedirectUri = "{$fbScheme}://{$fbHost}/api/fb-auth.php?action=callback";
 
 // Facebook connections
 try {
@@ -90,6 +93,17 @@ $fbSvg = '<svg viewBox="0 0 24 24" width="18" height="18" xmlns="http://www.w3.o
         Acesse <a href="https://developers.facebook.com/apps/" target="_blank" style="color:var(--accent);text-decoration:underline;">Facebook Developers</a>, 
         crie um App tipo "Business", ative "Facebook Login" e copie App ID + Secret.
     </p>
+    <div class="alert alert-warning" style="margin-bottom:16px;">
+        <strong>Modo teste sem publicar:</strong> deixe o app em desenvolvimento, adicione seu perfil em App Roles
+        como Admin/Developer/Tester e cadastre este Redirect URI no Facebook Login:
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px;">
+            <code id="fbRedirectUri" style="font-size:12px;word-break:break-all;"><?= sanitize($fbRedirectUri) ?></code>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="copyFacebookRedirectUri()">Copiar URI</button>
+        </div>
+        <div style="font-size:12px;color:var(--text-muted);margin-top:8px;">
+            Para puxar contas reais de anuncio, use seu usuario real adicionado ao app; usuarios de teste da Meta geralmente nao acessam suas contas reais.
+        </div>
+    </div>
     <form method="POST">
         <input type="hidden" name="action" value="save_fb_app">
         <div class="form-row">
@@ -304,6 +318,23 @@ function escapeHtml(value) {
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#039;');
+}
+
+async function copyFacebookRedirectUri() {
+    const el = document.getElementById('fbRedirectUri');
+    if (!el) return;
+
+    const text = el.textContent.trim();
+    try {
+        await navigator.clipboard.writeText(text);
+    } catch (e) {
+        const input = document.createElement('input');
+        input.value = text;
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand('copy');
+        document.body.removeChild(input);
+    }
 }
 
 async function testFacebookConnection(mode = 'auto') {
