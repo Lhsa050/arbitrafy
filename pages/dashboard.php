@@ -886,7 +886,7 @@ async function syncAll() {
             // GA4 not configured — skip silently
         }
         
-        const fbMsg = fbData.success ? `FB: ${fbData.imported} registros, ${fbData.hourly || 0} horas` : `FB: erro`;
+        const fbMsg = fbData.success ? `FB: ${fbData.imported} registros, ${fbData.hourly || 0} horas` : `FB: ${fbData.error || 'erro'}`;
         const gamMsg = gamData.success ? `GAM: ${gamData.imported} registros` : `GAM: erro`;
         
         status.textContent = `✅ ${fbMsg} | ${gamMsg}${gadsMsg}${ga4Msg}`;

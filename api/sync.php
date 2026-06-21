@@ -149,27 +149,109 @@ function parseFBHourlyStart($label)
     return 0;
 }
 
+function getFBSyncAccounts()
+{
+    $syncAccounts = [];
+
+    try {
+        $connections = fetchAll("SELECT * FROM fb_connections WHERE status = 'active'");
+    } catch (Exception $e) {
+        $connections = [];
+    }
+
+    foreach ($connections as $conn) {
+        $token = $conn['access_token'] ?? '';
+        if (empty($token)) {
+            continue;
+        }
+
+        if (!empty($conn['token_expires_at']) && strtotime($conn['token_expires_at']) <= time()) {
+            try {
+                update('fb_connections', [
+                    'status' => 'expired',
+                    'updated_at' => date('Y-m-d H:i:s'),
+                ], 'id = ?', [$conn['id']]);
+            } catch (Exception $e) {
+            }
+            logSync('FB', 'WARNING', 'oauth_expired', 'Conexao Facebook expirada: ' . ($conn['fb_user_name'] ?? 'OAuth'));
+            continue;
+        }
+
+        $selectedAccounts = json_decode($conn['selected_accounts'] ?? '[]', true) ?: [];
+        foreach ($selectedAccounts as $account) {
+            $accountId = $account['id'] ?? $account['account_id'] ?? '';
+            if ($accountId === '') {
+                continue;
+            }
+
+            $syncAccounts[] = [
+                'id' => $accountId,
+                'name' => $account['name'] ?? $accountId,
+                'token' => $token,
+                'source' => 'oauth',
+                'source_name' => $conn['fb_user_name'] ?? 'Facebook OAuth',
+                'connection_id' => $conn['id'] ?? null,
+            ];
+        }
+    }
+
+    if (!empty($syncAccounts)) {
+        return $syncAccounts;
+    }
+
+    $manualToken = getSetting('fb_access_token', '');
+    $manualAccounts = json_decode(getSetting('fb_ad_accounts', '[]'), true) ?: [];
+    foreach ($manualAccounts as $account) {
+        $accountId = $account['id'] ?? $account['account_id'] ?? '';
+        if ($manualToken === '' || $accountId === '') {
+            continue;
+        }
+
+        $syncAccounts[] = [
+            'id' => $accountId,
+            'name' => $account['name'] ?? $accountId,
+            'token' => $manualToken,
+            'source' => 'manual',
+            'source_name' => 'Token manual',
+            'connection_id' => null,
+        ];
+    }
+
+    return $syncAccounts;
+}
+
+function markFBSyncAccountExpired($syncAccount, $errorMessage = '')
+{
+    if (($syncAccount['source'] ?? '') !== 'oauth' || empty($syncAccount['connection_id'])) {
+        return;
+    }
+
+    try {
+        update('fb_connections', [
+            'status' => 'expired',
+            'updated_at' => date('Y-m-d H:i:s'),
+        ], 'id = ?', [$syncAccount['connection_id']]);
+        logSync('FB', 'WARNING', 'oauth_expired', 'Conexao Facebook marcada como expirada: ' . ($syncAccount['source_name'] ?? 'OAuth'), $errorMessage);
+    } catch (Exception $e) {
+    }
+}
+
 function doSyncFB()
 {
     $syncStart = microtime(true);
-    $token = getSetting('fb_access_token', '');
     $version = getSetting('fb_api_version', 'v24.0');
-    $accountsJson = getSetting('fb_ad_accounts', '[]');
-    $accounts = json_decode($accountsJson, true) ?: [];
-
-    if (empty($token)) {
-        logSync('FB', 'ERROR', 'config', 'Token do Facebook não configurado.');
-        echo json_encode(['success' => false, 'error' => 'Token do Facebook não configurado.']);
+    $fbAccounts = getFBSyncAccounts();
+    if (empty($fbAccounts)) {
+        logSync('FB', 'ERROR', 'config', 'Nenhuma conta Facebook ativa configurada.');
+        echo json_encode(['success' => false, 'error' => 'Nenhuma conta Facebook ativa configurada. Reconecte o Facebook ou atualize o token manual.']);
         exit;
     }
-    if (empty($accounts)) {
-        logSync('FB', 'ERROR', 'config', 'Nenhuma conta configurada.');
-        echo json_encode(['success' => false, 'error' => 'Nenhuma conta configurada.']);
-        exit;
-    }
+    $accounts = $fbAccounts;
+    $token = '';
 
     $totalImported = 0;
     $errors = [];
+    $mainErrorCount = 0;
     $since = date('Y-m-d', strtotime('-30 days'));
     $until = date('Y-m-d');
 
@@ -183,6 +265,7 @@ function doSyncFB()
     foreach ($accounts as $account) {
         $accountId = $account['id'];
         $accountName = $account['name'];
+        $token = $account['token'] ?? $token;
 
         // Sync all configured accounts (no name filter)
         if (strpos($accountId, 'act_') !== 0)
@@ -202,6 +285,10 @@ function doSyncFB()
         if (isset($result['error'])) {
             $errMsg = $accountName . ': ' . ($result['error']['message'] ?? 'Erro');
             $errors[] = $errMsg;
+            $mainErrorCount++;
+            if (($result['error']['code'] ?? 0) == 190) {
+                markFBSyncAccountExpired($account, $errMsg);
+            }
             logSync('FB', 'ERROR', 'api_request', $errMsg, [
                 'account' => $accountName,
                 'error_type' => $result['error']['type'] ?? '',
@@ -221,79 +308,11 @@ function doSyncFB()
         }
 
         foreach ($allData as $row) {
-            $vizLp = 0;
-            $custoVizLp = 0;
-            $results = 0;
-            $costPerResult = 0;
-
-            // Detect "Resultados": custom conversions first (e.g. clicouAd), then actions fallback
-            $bestAction = null;
-            $bestSource = 'actions'; // tracks which array the result came from
-
-            // Pass 1: Check 'conversions' array (custom conversions from Events Manager)
-            foreach ($row['conversions'] ?? [] as $conv) {
-                if (!$bestAction) {
-                    $bestAction = $conv['action_type'];
-                    $results = (int) $conv['value'];
-                    $bestSource = 'conversions';
-                }
-            }
-
-            // Pass 2: Check 'actions' for custom events (offsite_conversion.custom.*)
-            if (!$bestAction) {
-                foreach ($row['actions'] ?? [] as $act) {
-                    if ($act['action_type'] === 'landing_page_view') {
-                        $vizLp = (int) $act['value'];
-                    }
-                    if (!$bestAction && strpos($act['action_type'], 'offsite_conversion.custom') === 0) {
-                        $bestAction = $act['action_type'];
-                        $results = (int) $act['value'];
-                    }
-                }
-            } else {
-                // Still need to extract viz_lp
-                foreach ($row['actions'] ?? [] as $act) {
-                    if ($act['action_type'] === 'landing_page_view') {
-                        $vizLp = (int) $act['value'];
-                        break;
-                    }
-                }
-            }
-
-            // Pass 3: Fallback to standard actions
-            if (!$bestAction) {
-                $fallback = ['link_click', 'landing_page_view', 'offsite_conversion.fb_pixel_purchase', 'offsite_conversion.fb_pixel_lead', 'page_engagement'];
-                foreach ($fallback as $fb) {
-                    foreach ($row['actions'] ?? [] as $act) {
-                        if ($act['action_type'] === $fb) {
-                            $bestAction = $fb;
-                            $results = (int) $act['value'];
-                            break 2;
-                        }
-                    }
-                }
-            }
-
-            // Get cost per result from the matching source
-            if ($bestAction) {
-                $costArray = ($bestSource === 'conversions') 
-                    ? ($row['cost_per_conversion'] ?? []) 
-                    : ($row['cost_per_action_type'] ?? []);
-                foreach ($costArray as $cpa) {
-                    if ($cpa['action_type'] === $bestAction) {
-                        $costPerResult = (float) $cpa['value'];
-                        break;
-                    }
-                }
-            }
-
-            // Extract cost per landing page view
-            foreach ($row['cost_per_action_type'] ?? [] as $cpa) {
-                if ($cpa['action_type'] === 'landing_page_view') {
-                    $custoVizLp = (float) $cpa['value'];
-                    break;
-                }
-            }
+            $metrics = extractFBInsightResultMetrics($row);
+            $vizLp = $metrics['viz_lp'];
+            $custoVizLp = $metrics['custo_viz_lp'];
+            $results = $metrics['results'];
+            $costPerResult = $metrics['cost_per_result'];
 
             $invest = (float) ($row['spend'] ?? 0);
             $impressoes = (int) ($row['impressions'] ?? 0);
@@ -319,6 +338,23 @@ function doSyncFB()
         }
     }
 
+    if ($totalImported === 0 && $mainErrorCount >= count($accounts) && !empty($errors)) {
+        $durationMs = round((microtime(true) - $syncStart) * 1000);
+        $message = 'Facebook nao sincronizou. Reconecte o Facebook ou atualize o token manual.';
+        logSync('FB', 'ERROR', 'sync_failed', $message, implode("\n", $errors), null, $durationMs);
+        echo json_encode([
+            'success' => false,
+            'error' => $message,
+            'message' => $message,
+            'imported' => 0,
+            'placements' => 0,
+            'devices' => 0,
+            'hourly' => 0,
+            'warnings' => $errors,
+        ]);
+        exit;
+    }
+
     // Cross-reference with revenue
     crossRef();
 
@@ -333,6 +369,7 @@ function doSyncFB()
         foreach ($accounts as $account) {
             $accountId = $account['id'];
             $accountName = $account['name'];
+            $token = $account['token'] ?? $token;
             if (strpos($accountId, 'act_') !== 0)
                 $accountId = 'act_' . $accountId;
 
@@ -348,6 +385,9 @@ function doSyncFB()
 
             $plResult = curlGet($plUrl);
             if (isset($plResult['error'])) {
+                if (($plResult['error']['code'] ?? 0) == 190) {
+                    markFBSyncAccountExpired($account, $plResult['error']['message'] ?? '');
+                }
                 logSync('FB', 'WARNING', 'placement_api', $accountName . ': ' . ($plResult['error']['message'] ?? 'Erro no placement breakdown'));
                 continue;
             }
@@ -410,6 +450,7 @@ function doSyncFB()
         foreach ($accounts as $account) {
             $accountId = $account['id'];
             $accountName = $account['name'];
+            $token = $account['token'] ?? $token;
             if (strpos($accountId, 'act_') !== 0)
                 $accountId = 'act_' . $accountId;
 
@@ -425,6 +466,9 @@ function doSyncFB()
 
             $devResult = curlGet($devUrl);
             if (isset($devResult['error'])) {
+                if (($devResult['error']['code'] ?? 0) == 190) {
+                    markFBSyncAccountExpired($account, $devResult['error']['message'] ?? '');
+                }
                 logSync('FB', 'WARNING', 'device_api', $accountName . ': ' . ($devResult['error']['message'] ?? 'Erro no device breakdown'));
                 continue;
             }
@@ -485,6 +529,7 @@ function doSyncFB()
         foreach ($accounts as $account) {
             $accountId = $account['id'];
             $accountName = $account['name'];
+            $token = $account['token'] ?? $token;
             if (strpos($accountId, 'act_') !== 0)
                 $accountId = 'act_' . $accountId;
 
@@ -501,6 +546,9 @@ function doSyncFB()
 
             $hourResult = curlGet($hourUrl);
             if (isset($hourResult['error'])) {
+                if (($hourResult['error']['code'] ?? 0) == 190) {
+                    markFBSyncAccountExpired($account, $hourResult['error']['message'] ?? '');
+                }
                 logSync('FB', 'WARNING', 'hourly_api_full', $accountName . ': tentando sync horario sem conversoes - ' . ($hourResult['error']['message'] ?? 'Erro no hourly breakdown'));
 
                 $leanHourFields = 'date_start,campaign_id,campaign_name,spend,impressions,inline_link_clicks,inline_link_click_ctr,cost_per_inline_link_click';
@@ -517,6 +565,9 @@ function doSyncFB()
             }
 
             if (isset($hourResult['error'])) {
+                if (($hourResult['error']['code'] ?? 0) == 190) {
+                    markFBSyncAccountExpired($account, $hourResult['error']['message'] ?? '');
+                }
                 logSync('FB', 'WARNING', 'hourly_api', $accountName . ': ' . ($hourResult['error']['message'] ?? 'Erro no hourly breakdown'));
                 continue;
             }
@@ -580,15 +631,20 @@ function doSyncFB()
     }
 
     $durationMs = round((microtime(true) - $syncStart) * 1000);
+    $fbSyncFailed = ($totalImported === 0 && $mainErrorCount >= count($accounts) && !empty($errors));
 
     $response = [
-        'success' => true,
+        'success' => !$fbSyncFailed,
         'message' => "FB sincronizado! {$totalImported} registros, {$placementCount} placements, {$deviceCount} devices, {$hourlyCount} horas.",
         'imported' => $totalImported,
         'placements' => $placementCount,
         'devices' => $deviceCount,
         'hourly' => $hourlyCount,
     ];
+    if ($fbSyncFailed) {
+        $response['error'] = 'Facebook nao sincronizou. Reconecte o Facebook ou atualize o token manual.';
+        $response['message'] = $response['error'];
+    }
     if (!empty($errors)) {
         $response['warnings'] = $errors;
         logSync('FB', 'WARNING', 'sync_complete', "FB sync com avisos: {$totalImported} registros, {$placementCount} placements, {$deviceCount} devices, {$hourlyCount} horas, " . count($errors) . " erros", implode("\n", $errors), null, $durationMs);
