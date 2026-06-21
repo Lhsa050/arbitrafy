@@ -121,6 +121,11 @@ $fbSvg = '<svg viewBox="0 0 24 24" width="18" height="18" xmlns="http://www.w3.o
         </div>
     <?php endif; ?>
 
+    <div style="margin-top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <button type="button" class="btn btn-secondary btn-sm" id="btnTestFBConnection" onclick="testFacebookConnection()">TESTAR CONEXÃO</button>
+    </div>
+    <div id="fbTestStatus" style="margin-top:12px;display:none;"></div>
+
     <?php if ($hasConnection): ?>
         <div style="margin-top:20px;">
             <h4 style="font-size:12px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:12px;">Contas conectadas</h4>
@@ -286,5 +291,54 @@ function toggleCollapsible(header) {
     const arrow = header.querySelector('.collapsible-arrow');
     content.classList.toggle('open');
     arrow.style.transform = content.classList.contains('open') ? 'rotate(180deg)' : 'rotate(0)';
+}
+
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
+async function testFacebookConnection() {
+    const btn = document.getElementById('btnTestFBConnection');
+    const status = document.getElementById('fbTestStatus');
+    if (!btn || !status) return;
+
+    btn.disabled = true;
+    btn.textContent = 'TESTANDO...';
+    status.style.display = 'block';
+    status.className = 'alert alert-warning';
+    status.innerHTML = 'Testando conexão com Facebook...';
+
+    try {
+        const res = await fetch('/api/fb-auth.php?action=test_connection', {
+            headers: { 'Accept': 'application/json' }
+        });
+        const data = await res.json();
+        const lines = [];
+
+        (data.checks || []).forEach(check => {
+            lines.push(`<div style="margin-top:8px;"><strong>${escapeHtml(check.name)}</strong>: ${escapeHtml(check.message || '')}</div>`);
+            (check.accounts || []).slice(0, 8).forEach(account => {
+                const label = account.ok ? 'OK' : 'Erro';
+                const detail = account.ok
+                    ? [account.currency, account.timezone].filter(Boolean).join(' • ')
+                    : (account.message || '');
+                lines.push(`<div style="font-size:12px;margin-left:12px;color:var(--text-muted);">${escapeHtml(label)} - ${escapeHtml(account.name)} <span style="font-family:monospace;">${escapeHtml(account.id)}</span>${detail ? ' - ' + escapeHtml(detail) : ''}</div>`);
+            });
+        });
+
+        status.className = data.success ? 'alert alert-success' : 'alert alert-warning';
+        status.innerHTML = `<strong>${data.success ? 'Conexão OK' : 'Atenção'}</strong><br>${escapeHtml(data.message || '')}${lines.join('')}`;
+    } catch (e) {
+        status.className = 'alert alert-warning';
+        status.innerHTML = `<strong>Erro no teste</strong><br>${escapeHtml(e.message)}`;
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'TESTAR CONEXÃO';
+    }
 }
 </script>

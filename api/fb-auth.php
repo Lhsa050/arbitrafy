@@ -53,6 +53,9 @@ switch ($action) {
     case 'save_selection':
         handleSaveSelection();
         break;
+    case 'test_connection':
+        handleTestConnection($fbApiVersion);
+        break;
     default:
         jsonResponse(['error' => 'Ação inválida'], 400);
 }
@@ -312,6 +315,176 @@ function handleSaveSelection() {
     $_SESSION['fb_auth_success'] = '✅ ' . count($selected) . ' contas selecionadas para sincronização.';
     header('Location: /?page=settings');
     exit;
+}
+
+/**
+ * Quick connection test without running the full sync.
+ */
+function handleTestConnection($version) {
+    $checks = [];
+    $totalAccounts = 0;
+    $okAccounts = 0;
+
+    try {
+        $connections = fetchAll("SELECT * FROM fb_connections WHERE status = 'active' ORDER BY connected_at DESC");
+    } catch (Exception $e) {
+        $connections = [];
+    }
+
+    foreach ($connections as $conn) {
+        $check = testFBTokenAndAccounts($version, $conn['access_token'], json_decode($conn['selected_accounts'] ?? '[]', true) ?: [], [
+            'source' => 'oauth',
+            'name' => $conn['fb_user_name'] ?? 'Facebook OAuth',
+            'expires_at' => $conn['token_expires_at'] ?? null,
+        ]);
+
+        if (!$check['token_ok'] && !empty($check['is_expired'])) {
+            try {
+                update('fb_connections', [
+                    'status' => 'expired',
+                    'updated_at' => date('Y-m-d H:i:s'),
+                ], 'id = ?', [$conn['id']]);
+            } catch (Exception $e) {
+            }
+        }
+
+        $checks[] = $check;
+        $totalAccounts += $check['accounts_checked'];
+        $okAccounts += $check['accounts_ok'];
+    }
+
+    if (empty($checks)) {
+        $manualToken = getSetting('fb_access_token', '');
+        $manualAccounts = json_decode(getSetting('fb_ad_accounts', '[]'), true) ?: [];
+
+        if (empty($manualToken) || empty($manualAccounts)) {
+            jsonResponse([
+                'success' => false,
+                'message' => 'Nenhuma conexao Facebook ativa ou token manual configurado.',
+                'checks' => [],
+            ], 400);
+        }
+
+        $check = testFBTokenAndAccounts($version, $manualToken, $manualAccounts, [
+            'source' => 'manual',
+            'name' => 'Token manual',
+            'expires_at' => null,
+        ]);
+        $checks[] = $check;
+        $totalAccounts += $check['accounts_checked'];
+        $okAccounts += $check['accounts_ok'];
+    }
+
+    $tokenOk = false;
+    foreach ($checks as $check) {
+        if (!empty($check['token_ok'])) {
+            $tokenOk = true;
+            break;
+        }
+    }
+
+    $success = $tokenOk && $okAccounts > 0;
+    $message = $success
+        ? "Conexao OK: {$okAccounts}/{$totalAccounts} conta(s) de anuncio acessivel(is)."
+        : 'Conexao Facebook com problema. Reconecte a conta ou atualize o token manual.';
+
+    jsonResponse([
+        'success' => $success,
+        'message' => $message,
+        'accounts_ok' => $okAccounts,
+        'accounts_checked' => $totalAccounts,
+        'checks' => $checks,
+    ], $success ? 200 : 400);
+}
+
+function testFBTokenAndAccounts($version, $accessToken, $accounts, $meta = []) {
+    $check = [
+        'source' => $meta['source'] ?? '',
+        'name' => $meta['name'] ?? 'Facebook',
+        'expires_at' => $meta['expires_at'] ?? null,
+        'days_left' => null,
+        'token_ok' => false,
+        'is_expired' => false,
+        'message' => '',
+        'accounts_checked' => 0,
+        'accounts_ok' => 0,
+        'accounts' => [],
+    ];
+
+    if (!empty($check['expires_at'])) {
+        $expiresTs = strtotime($check['expires_at']);
+        if ($expiresTs) {
+            $check['days_left'] = (int)floor(($expiresTs - time()) / 86400);
+            if ($expiresTs <= time()) {
+                $check['is_expired'] = true;
+                $check['message'] = 'Token expirado. Reconecte a conta.';
+                return $check;
+            }
+        }
+    }
+
+    $meUrl = "https://graph.facebook.com/{$version}/me?" . http_build_query([
+        'fields' => 'id,name',
+        'access_token' => $accessToken,
+    ]);
+    $meResult = fbAuthRequest($meUrl);
+
+    if (isset($meResult['error'])) {
+        $check['message'] = $meResult['error']['message'] ?? 'Erro ao validar token.';
+        $check['is_expired'] = (($meResult['error']['code'] ?? 0) == 190);
+        return $check;
+    }
+
+    $check['token_ok'] = true;
+    $check['facebook_user'] = $meResult['name'] ?? '';
+
+    if (empty($accounts)) {
+        $check['message'] = 'Token valido, mas nenhuma conta de anuncio selecionada.';
+        return $check;
+    }
+
+    foreach ($accounts as $account) {
+        $accountId = $account['id'] ?? $account['account_id'] ?? '';
+        if ($accountId === '') {
+            continue;
+        }
+        if (strpos($accountId, 'act_') !== 0) {
+            $accountId = 'act_' . $accountId;
+        }
+
+        $accountUrl = "https://graph.facebook.com/{$version}/{$accountId}?" . http_build_query([
+            'fields' => 'name,account_status,currency,timezone_name',
+            'access_token' => $accessToken,
+        ]);
+        $accountResult = fbAuthRequest($accountUrl);
+        $check['accounts_checked']++;
+
+        if (isset($accountResult['error'])) {
+            $check['accounts'][] = [
+                'id' => $accountId,
+                'name' => $account['name'] ?? $accountId,
+                'ok' => false,
+                'message' => $accountResult['error']['message'] ?? 'Sem acesso.',
+            ];
+            continue;
+        }
+
+        $check['accounts_ok']++;
+        $check['accounts'][] = [
+            'id' => $accountId,
+            'name' => $accountResult['name'] ?? ($account['name'] ?? $accountId),
+            'ok' => true,
+            'status' => $accountResult['account_status'] ?? null,
+            'currency' => $accountResult['currency'] ?? '',
+            'timezone' => $accountResult['timezone_name'] ?? '',
+        ];
+    }
+
+    $check['message'] = $check['accounts_ok'] > 0
+        ? "Token valido e {$check['accounts_ok']}/{$check['accounts_checked']} conta(s) acessivel(is)."
+        : 'Token valido, mas nenhuma conta selecionada ficou acessivel.';
+
+    return $check;
 }
 
 // ============================================================
