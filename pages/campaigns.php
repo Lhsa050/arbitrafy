@@ -102,6 +102,47 @@ if ($viewMode === 'diario') {
     ", $params);
 }
 
+$negativeAlertTooltip = 'Campanha a mais de 3 dias no negativo';
+$negativeAlertMinDays = 4;
+$negativeCampaignAlerts = [];
+$alertCampaignIds = array_values(array_unique(array_filter(array_map(
+    fn($campaign) => (string)($campaign['campaign_id'] ?? ''),
+    $campaigns
+))));
+
+if (!empty($alertCampaignIds)) {
+    $alertPlaceholders = implode(',', array_fill(0, count($alertCampaignIds), '?'));
+    $negativeHistoryRows = fetchAll("
+        SELECT
+            fc.campaign_id,
+            fc.account_name,
+            fc.date,
+            COALESCE(SUM(fc.receita_brl), 0) - COALESCE(SUM(fc.investimento), 0) as ganho
+        FROM fb_campaigns fc
+        WHERE fc.campaign_id IN ({$alertPlaceholders})
+        GROUP BY fc.campaign_id, fc.account_name, fc.date
+        ORDER BY fc.campaign_id ASC, fc.account_name ASC, fc.date DESC
+    ", $alertCampaignIds);
+
+    $negativeStreaks = [];
+    $streakClosed = [];
+    foreach ($negativeHistoryRows as $historyRow) {
+        $alertKey = ($historyRow['account_name'] ?? '') . '|' . ($historyRow['campaign_id'] ?? '');
+        if (isset($streakClosed[$alertKey])) {
+            continue;
+        }
+
+        if ((float)($historyRow['ganho'] ?? 0) < 0) {
+            $negativeStreaks[$alertKey] = ($negativeStreaks[$alertKey] ?? 0) + 1;
+            if ($negativeStreaks[$alertKey] >= $negativeAlertMinDays) {
+                $negativeCampaignAlerts[$alertKey] = $negativeStreaks[$alertKey];
+            }
+        } else {
+            $streakClosed[$alertKey] = true;
+        }
+    }
+}
+
 $totals = fetchOne("
     SELECT
         COALESCE(SUM(fc.investimento), 0) as total_invest,
@@ -217,13 +258,21 @@ ob_start();
                     <div class="empty-state-text">Sincronize com o Facebook ou importe um CSV</div>
                 </td></tr>
                 <?php else: ?>
-                <?php foreach ($campaigns as $c): ?>
-                <tr>
+                <?php foreach ($campaigns as $c):
+                    $campaignAlertKey = ($c['account_name'] ?? '') . '|' . ($c['campaign_id'] ?? '');
+                    $hasNegativeAlert = isset($negativeCampaignAlerts[$campaignAlertKey]);
+                ?>
+                <tr class="<?= $hasNegativeAlert ? 'campaign-negative-alert' : '' ?>">
                     <?php if ($viewMode === 'diario'): ?>
                     <td><span class="badge badge-purple"><?= date('d/m/Y', strtotime($c['row_date'])) ?></span></td>
                     <?php endif; ?>
                     <td><span class="badge badge-blue"><?= $c['account_name'] ?></span></td>
-                    <td title="<?= sanitize($c['campaign_name']) ?>&#10;ID: <?= $c['campaign_id'] ?>"><?= sanitize(mb_substr($c['campaign_name'] ?? '', 0, 45)) ?></td>
+                    <td title="<?= sanitize($c['campaign_name']) ?>&#10;ID: <?= $c['campaign_id'] ?>">
+                        <?php if ($hasNegativeAlert): ?>
+                            <span class="campaign-alert-icon" title="<?= sanitize($negativeAlertTooltip) ?>" aria-label="<?= sanitize($negativeAlertTooltip) ?>">&#9888;</span>
+                        <?php endif; ?>
+                        <span class="campaign-name-text"><?= sanitize(mb_substr($c['campaign_name'] ?? '', 0, 45)) ?></span>
+                    </td>
                     <td><?= formatMoney($c['total_invest']) ?></td>
                     <td class="<?= $c['ganho'] >= 0 ? 'positive' : 'negative' ?>"><?= formatMoney($c['ganho']) ?></td>
                     <td><?= formatNumber($c['total_imp']) ?></td>
@@ -311,5 +360,30 @@ async function syncFacebook() {
     background: rgba(168, 85, 247, 0.15);
     color: #c084fc;
 }
+.campaign-negative-alert td {
+    background: rgba(255, 69, 58, 0.12);
+}
+.campaign-negative-alert:hover td {
+    background: rgba(255, 69, 58, 0.18);
+}
+.campaign-alert-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    margin-right: 6px;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 69, 58, 0.35);
+    background: rgba(255, 69, 58, 0.18);
+    color: var(--red);
+    font-size: 12px;
+    font-weight: 800;
+    line-height: 1;
+    cursor: help;
+    vertical-align: middle;
+}
+.campaign-name-text {
+    vertical-align: middle;
+}
 </style>
-
