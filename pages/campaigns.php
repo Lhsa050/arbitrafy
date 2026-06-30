@@ -44,13 +44,23 @@ $orderBy = match($sort) {
 };
 
 if ($viewMode === 'diario') {
-    // Modo DIÁRIO — cada dia em uma linha separada
-    // Ajuste orderBy para campo correto no modo diário
-    $dailyOrderBy = match($sort) {
-        'date_desc' => 'fc.date DESC',
-        'date_asc' => 'fc.date ASC',
-        default => $orderBy,
+    // Modo DIÁRIO: sempre em ordem cronológica crescente; o sort escolhido só desempata dentro do dia.
+    $dailySecondaryOrderBy = match($sort) {
+        'name_asc' => 'campaign_name ASC',
+        'name_desc' => 'campaign_name DESC',
+        'invest_desc' => 'total_invest DESC',
+        'invest_asc' => 'total_invest ASC',
+        'ganho_desc' => 'ganho DESC',
+        'ganho_asc' => 'ganho ASC',
+        'impr_desc' => 'total_imp DESC',
+        'impr_asc' => 'total_imp ASC',
+        'click_desc' => 'total_clicks DESC',
+        'click_asc' => 'total_clicks ASC',
+        'roas_desc' => 'roas DESC',
+        'roas_asc' => 'roas ASC',
+        default => 'campaign_name ASC',
     };
+    $dailyOrderBy = "fc.date ASC, {$dailySecondaryOrderBy}";
     $campaigns = fetchAll("
         SELECT
             fc.campaign_id,
@@ -235,7 +245,7 @@ ob_start();
             <thead>
                 <tr>
                     <?php if ($viewMode === 'diario'): ?>
-                    <th><a href="<?= campUrl(['sort' => sortToggle('date', $sort)]) ?>" class="sort-link">Data <?= sortArrow('date', $sort) ?></a></th>
+                    <th><span class="sort-link">Data ↑</span></th>
                     <?php endif; ?>
                     <th>Conta</th>
                     <th><a href="<?= campUrl(['sort' => sortToggle('name', $sort)]) ?>" class="sort-link">Campanha <?= sortArrow('name', $sort) ?></a></th>
