@@ -261,6 +261,10 @@ ob_start();
                 <?php foreach ($campaigns as $c):
                     $campaignAlertKey = ($c['account_name'] ?? '') . '|' . ($c['campaign_id'] ?? '');
                     $hasNegativeAlert = isset($negativeCampaignAlerts[$campaignAlertKey]);
+                    $campaignNameFull = $c['campaign_name'] ?? '';
+                    $campaignNameShort = mb_strlen($campaignNameFull) > 45
+                        ? mb_substr($campaignNameFull, 0, 45) . '...'
+                        : $campaignNameFull;
                 ?>
                 <tr class="<?= $hasNegativeAlert ? 'campaign-negative-alert' : '' ?>">
                     <?php if ($viewMode === 'diario'): ?>
@@ -268,10 +272,21 @@ ob_start();
                     <?php endif; ?>
                     <td><span class="badge badge-blue"><?= $c['account_name'] ?></span></td>
                     <td title="<?= sanitize($c['campaign_name']) ?>&#10;ID: <?= $c['campaign_id'] ?>">
+                        <button type="button"
+                                class="campaign-copy-btn"
+                                data-campaign-id="<?= sanitize($c['campaign_id']) ?>"
+                                onclick="copyCampaignId(this)"
+                                title="Copiar ID da campanha"
+                                aria-label="Copiar ID da campanha">ID</button>
                         <?php if ($hasNegativeAlert): ?>
                             <span class="campaign-alert-icon" title="<?= sanitize($negativeAlertTooltip) ?>" aria-label="<?= sanitize($negativeAlertTooltip) ?>">&#9888;</span>
                         <?php endif; ?>
-                        <span class="campaign-name-text"><?= sanitize(mb_substr($c['campaign_name'] ?? '', 0, 45)) ?></span>
+                        <button type="button"
+                                class="campaign-name-toggle"
+                                data-full-name="<?= sanitize($campaignNameFull) ?>"
+                                data-short-name="<?= sanitize($campaignNameShort) ?>"
+                                onclick="toggleCampaignName(this)"
+                                title="Clique para ver o nome completo"><?= sanitize($campaignNameShort) ?></button>
                     </td>
                     <td><?= formatMoney($c['total_invest']) ?></td>
                     <td class="<?= $c['ganho'] >= 0 ? 'positive' : 'negative' ?>"><?= formatMoney($c['ganho']) ?></td>
@@ -291,6 +306,47 @@ ob_start();
 </div>
 
 <script>
+async function copyCampaignId(button) {
+    const campaignId = button?.dataset?.campaignId || '';
+    if (!campaignId) return;
+
+    const originalText = button.textContent;
+    const originalTitle = button.title;
+
+    try {
+        if (navigator.clipboard && window.isSecureContext) {
+            await navigator.clipboard.writeText(campaignId);
+        } else {
+            const input = document.createElement('input');
+            input.value = campaignId;
+            input.style.position = 'fixed';
+            input.style.opacity = '0';
+            document.body.appendChild(input);
+            input.select();
+            document.execCommand('copy');
+            document.body.removeChild(input);
+        }
+
+        button.textContent = 'OK';
+        button.title = 'ID copiado';
+        button.classList.add('copied');
+        setTimeout(() => {
+            button.textContent = originalText;
+            button.title = originalTitle;
+            button.classList.remove('copied');
+        }, 1200);
+    } catch (e) {
+        alert('Nao foi possivel copiar o ID: ' + e.message);
+    }
+}
+
+function toggleCampaignName(button) {
+    const expanded = button.dataset.expanded === '1';
+    button.dataset.expanded = expanded ? '0' : '1';
+    button.textContent = expanded ? button.dataset.shortName : button.dataset.fullName;
+    button.title = expanded ? 'Clique para ver o nome completo' : 'Clique para recolher o nome';
+}
+
 async function syncFacebook() {
     const btn = event.target;
     btn.disabled = true;
@@ -383,7 +439,44 @@ async function syncFacebook() {
     cursor: help;
     vertical-align: middle;
 }
-.campaign-name-text {
+.campaign-copy-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 28px;
+    height: 22px;
+    margin-right: 8px;
+    padding: 0 7px;
+    border: 1px solid rgba(10, 132, 255, 0.28);
+    border-radius: 6px;
+    background: rgba(10, 132, 255, 0.12);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 800;
+    line-height: 1;
+    cursor: pointer;
     vertical-align: middle;
+}
+.campaign-copy-btn:hover {
+    background: rgba(10, 132, 255, 0.2);
+}
+.campaign-copy-btn.copied {
+    border-color: rgba(48, 209, 88, 0.35);
+    background: rgba(48, 209, 88, 0.16);
+    color: var(--green);
+}
+.campaign-name-toggle {
+    max-width: 720px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--text-primary);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    vertical-align: middle;
+}
+.campaign-name-toggle:hover {
+    color: var(--accent);
 }
 </style>
