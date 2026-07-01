@@ -153,6 +153,31 @@ if (!empty($alertCampaignIds)) {
     }
 }
 
+$bestRecentTooltip = 'Melhor campanha nos ultimos 3 dias.';
+$bestRecentCampaignKey = null;
+$latestCampaignDateRow = fetchOne("SELECT MAX(date) as latest_date FROM fb_campaigns");
+$latestCampaignDate = $latestCampaignDateRow['latest_date'] ?? null;
+
+if ($latestCampaignDate) {
+    $bestRecentStart = date('Y-m-d', strtotime($latestCampaignDate . ' -2 days'));
+    $bestRecentCampaign = fetchOne("
+        SELECT
+            fc.campaign_id,
+            fc.account_name,
+            COALESCE(SUM(fc.receita_brl), 0) - COALESCE(SUM(fc.investimento), 0) as ganho
+        FROM fb_campaigns fc
+        WHERE fc.date BETWEEN ? AND ?
+        GROUP BY fc.campaign_id, fc.account_name
+        HAVING (COALESCE(SUM(fc.receita_brl), 0) - COALESCE(SUM(fc.investimento), 0)) > 0
+        ORDER BY ganho DESC
+        LIMIT 1
+    ", [$bestRecentStart, $latestCampaignDate]);
+
+    if ($bestRecentCampaign) {
+        $bestRecentCampaignKey = ($bestRecentCampaign['account_name'] ?? '') . '|' . ($bestRecentCampaign['campaign_id'] ?? '');
+    }
+}
+
 $totals = fetchOne("
     SELECT
         COALESCE(SUM(fc.investimento), 0) as total_invest,
@@ -271,6 +296,7 @@ ob_start();
                 <?php foreach ($campaigns as $c):
                     $campaignAlertKey = ($c['account_name'] ?? '') . '|' . ($c['campaign_id'] ?? '');
                     $hasNegativeAlert = isset($negativeCampaignAlerts[$campaignAlertKey]);
+                    $isBestRecentCampaign = $bestRecentCampaignKey !== null && $campaignAlertKey === $bestRecentCampaignKey;
                     $campaignNameFull = $c['campaign_name'] ?? '';
                     $campaignNameShort = mb_strlen($campaignNameFull) > 45
                         ? mb_substr($campaignNameFull, 0, 45) . '...'
@@ -297,6 +323,9 @@ ob_start();
                                 data-short-name="<?= sanitize($campaignNameShort) ?>"
                                 onclick="toggleCampaignName(this)"
                                 title="Clique para ver o nome completo"><?= sanitize($campaignNameShort) ?></button>
+                        <?php if ($isBestRecentCampaign): ?>
+                            <span class="campaign-best-star" title="<?= sanitize($bestRecentTooltip) ?>" aria-label="<?= sanitize($bestRecentTooltip) ?>">&#9733;</span>
+                        <?php endif; ?>
                     </td>
                     <td><?= formatMoney($c['total_invest']) ?></td>
                     <td class="<?= $c['ganho'] >= 0 ? 'positive' : 'negative' ?>"><?= formatMoney($c['ganho']) ?></td>
@@ -488,5 +517,22 @@ async function syncFacebook() {
 }
 .campaign-name-toggle:hover {
     color: var(--accent);
+}
+.campaign-best-star {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    margin-left: 8px;
+    border-radius: 50%;
+    color: var(--yellow);
+    background: rgba(255, 214, 10, 0.14);
+    border: 1px solid rgba(255, 214, 10, 0.28);
+    font-size: 13px;
+    line-height: 1;
+    cursor: help;
+    vertical-align: middle;
+    box-shadow: 0 0 12px rgba(255, 214, 10, 0.08);
 }
 </style>
