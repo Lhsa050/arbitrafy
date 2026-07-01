@@ -24,6 +24,7 @@ function getDB() {
 
         if (DB_TYPE === 'sqlite') {
             $pdo->exec('PRAGMA journal_mode=WAL');
+            $pdo->exec('PRAGMA busy_timeout=10000');
             $pdo->exec('PRAGMA foreign_keys=ON');
         }
     } catch (PDOException $e) {

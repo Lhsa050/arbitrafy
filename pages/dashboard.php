@@ -846,7 +846,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
 
 
-async function syncAll() {
+async function syncAllLegacy() {
     const btn = document.getElementById('btnSyncAll');
     const status = document.getElementById('syncStatus');
     btn.disabled = true;
@@ -901,6 +901,106 @@ async function syncAll() {
         btn.textContent = '🔄 Atualizar Dados';
     }
 }
+window.syncAll = async function syncAllFast() {
+    const btn = document.getElementById('btnSyncAll');
+    const status = document.getElementById('syncStatus');
+    btn.disabled = true;
+    btn.textContent = 'Sincronizando...';
+    status.textContent = '';
+    status.style.color = '#f59e0b';
+
+    const progress = {
+        fb: 'FB: sincronizando...',
+        gam: 'GAM: sincronizando...',
+        gads: 'GAds: sincronizando...',
+        ga4: 'GA4: sincronizando...'
+    };
+
+    const renderProgress = () => {
+        status.textContent = Object.values(progress).join(' | ');
+    };
+
+    const runSync = async (key, label, action, options = {}) => {
+        const startedAt = performance.now();
+        try {
+            const suffix = options.skipCrossRef ? '&skip_cross_ref=1' : '';
+            const res = await fetch(`api/sync.php?action=${action}${suffix}`, { cache: 'no-store' });
+            const raw = await res.text();
+            let data;
+
+            try {
+                data = JSON.parse(raw);
+            } catch (jsonError) {
+                throw new Error(raw ? raw.slice(0, 180) : 'Resposta invalida');
+            }
+
+            const ok = res.ok && data.success !== false;
+            const duration = Math.round((performance.now() - startedAt) / 1000);
+            progress[key] = ok ? `${label}: OK (${duration}s)` : `${label}: ${options.optional ? 'ignorado' : 'erro'}`;
+            renderProgress();
+
+            return { key, label, action, ok, data, optional: !!options.optional, error: data.error || data.message || 'erro' };
+        } catch (e) {
+            progress[key] = `${label}: ${options.optional ? 'ignorado' : 'erro'}`;
+            renderProgress();
+            return { key, label, action, ok: false, data: null, optional: !!options.optional, error: e.message };
+        }
+    };
+
+    const formatResult = (result) => {
+        if (!result) return '';
+        const data = result.data || {};
+
+        if (result.action === 'sync_fb') {
+            return result.ok
+                ? `FB: ${data.imported || 0} registros, ${data.hourly || 0} horas`
+                : `FB: ${result.error || 'erro'}`;
+        }
+        if (result.action === 'sync_gam') {
+            return result.ok
+                ? `GAM: ${data.imported || 0} registros`
+                : `GAM: ${result.error || 'erro'}`;
+        }
+        if (result.action === 'sync_google_ads') {
+            return result.ok ? `GAds: ${data.imported || 0} reg.` : '';
+        }
+        if (result.action === 'sync_ga4') {
+            return result.ok ? `GA4: ${data.imported || 0} sessoes` : '';
+        }
+        return '';
+    };
+
+    try {
+        renderProgress();
+        const results = await Promise.all([
+            runSync('fb', 'FB', 'sync_fb', { skipCrossRef: true }),
+            runSync('gam', 'GAM', 'sync_gam', { skipCrossRef: true }),
+            runSync('gads', 'GAds', 'sync_google_ads', { optional: true }),
+            runSync('ga4', 'GA4', 'sync_ga4', { optional: true })
+        ]);
+
+        status.textContent = 'Finalizando calculos...';
+        const finalRes = await fetch('api/sync.php?action=cross_ref', { cache: 'no-store' });
+        const finalData = await finalRes.json();
+        if (!finalRes.ok || finalData.success === false) {
+            throw new Error(finalData.error || 'Erro no calculo final');
+        }
+
+        const criticalError = results.some(result => !result.optional && !result.ok);
+        const messages = results.map(formatResult).filter(Boolean);
+
+        status.textContent = `${criticalError ? 'Aviso: ' : 'OK: '}${messages.join(' | ')}`;
+        status.style.color = criticalError ? '#f59e0b' : '#10b981';
+
+        setTimeout(() => location.reload(), 1500);
+    } catch (e) {
+        status.textContent = 'Erro na sincronizacao: ' + e.message;
+        status.style.color = '#ef4444';
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Atualizar Dados';
+    }
+};
 </script>
 
 <style>

@@ -11,6 +11,9 @@ require_once __DIR__ . '/../includes/db.php';
 require_once __DIR__ . '/../includes/helpers.php';
 require_once __DIR__ . '/../includes/auth.php';
 requireLogin();
+if (session_status() === PHP_SESSION_ACTIVE) {
+    session_write_close();
+}
 
 // Ensure sync_logs table exists (auto-create if missing)
 try {
@@ -67,9 +70,17 @@ switch ($action) {
     case 'sync_ga4':
         doSyncGA4();
         break;
+    case 'cross_ref':
+        doCrossRefOnly();
+        break;
     default:
-        echo json_encode(['error' => 'Ação inválida. Use: sync_fb, sync_gam, sync_google_ads ou sync_ga4']);
+        echo json_encode(['error' => 'Ação inválida. Use: sync_fb, sync_gam, sync_google_ads, sync_ga4 ou cross_ref']);
         exit;
+}
+
+function shouldSkipCrossRef()
+{
+    return ($_GET['skip_cross_ref'] ?? '') === '1';
 }
 
 function extractFBInsightResultMetrics($row)
@@ -355,8 +366,10 @@ function doSyncFB()
         exit;
     }
 
-    // Cross-reference with revenue
-    crossRef();
+    // Cross-reference with revenue unless a final batched crossRef will run after parallel sync.
+    if (!shouldSkipCrossRef()) {
+        crossRef();
+    }
 
     // ====================================================
     // Placement breakdown sync (spend per placement per campaign)
@@ -1309,7 +1322,9 @@ XML;
             }
         }
 
-        crossRef();
+        if (!shouldSkipCrossRef()) {
+            crossRef();
+        }
 
         // ====================================================
         // PASS 3: Device Category × utm_campaign revenue
@@ -1713,6 +1728,31 @@ function crossRef()
             ], 'id = ?', [$campaign['id']]);
         }
     }
+}
+
+function doCrossRefOnly()
+{
+    $syncStart = microtime(true);
+
+    try {
+        crossRef();
+        $durationMs = round((microtime(true) - $syncStart) * 1000);
+        logSync('SYNC', 'INFO', 'cross_ref', "Cross-reference final OK ({$durationMs}ms)", null, null, $durationMs);
+        echo json_encode([
+            'success' => true,
+            'message' => 'Cross-reference finalizado.',
+            'duration_ms' => $durationMs,
+        ]);
+    } catch (Exception $e) {
+        $durationMs = round((microtime(true) - $syncStart) * 1000);
+        logSync('SYNC', 'ERROR', 'cross_ref', 'Erro no cross-reference final: ' . $e->getMessage(), $e->getTraceAsString(), null, $durationMs);
+        echo json_encode([
+            'success' => false,
+            'error' => 'Erro no cross-reference final: ' . $e->getMessage(),
+        ]);
+    }
+
+    exit;
 }
 
 function doSyncGoogleAds()
