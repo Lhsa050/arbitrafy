@@ -125,6 +125,9 @@ function syncGAM() {
     }
 
     try {
+        if (function_exists('ensureRevenueTableSchema')) {
+            ensureRevenueTableSchema();
+        }
 
         // Step 2: Create report job via SOAP API
         $since = date('Y-m-d', strtotime('-30 days'));
@@ -153,7 +156,8 @@ function syncGAM() {
                         'campaign_id' => $campaignId,
                         'utm_campaign' => $campaignId,
                         'receita_usd' => $receita,
-                    ], ['date', 'campaign_id']);
+                        'site_name' => '',
+                    ], ['date', 'campaign_id', 'site_name']);
                     $imported++;
                 } catch (Exception $e) {}
             }

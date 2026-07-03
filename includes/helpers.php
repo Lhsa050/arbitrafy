@@ -203,6 +203,199 @@ function ensureGA4Table() {
 }
 
 /**
+ * Ensure revenue table supports GAM site breakdowns and newer metrics.
+ * Older installs created revenue with UNIQUE(date, campaign_id), which
+ * breaks imports once site_name is included in the upsert key.
+ */
+function ensureRevenueTableSchema() {
+    static $ensured = false;
+    if ($ensured) return;
+
+    try {
+        if (defined('DB_TYPE') && DB_TYPE === 'mysql') {
+            getDB()->exec("CREATE TABLE IF NOT EXISTS revenue (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                date DATE NOT NULL,
+                campaign_id VARCHAR(50) NOT NULL,
+                utm_campaign VARCHAR(255),
+                receita_usd DECIMAL(12,6) DEFAULT 0,
+                gam_impressions INT DEFAULT 0,
+                gam_ad_requests INT DEFAULT 0,
+                site_name VARCHAR(255) NOT NULL DEFAULT '',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY unique_revenue_date_campaign_site (date, campaign_id, site_name)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+            $columns = array_column(fetchAll("SHOW COLUMNS FROM revenue"), 'Field');
+            if (!in_array('gam_impressions', $columns, true)) {
+                getDB()->exec("ALTER TABLE revenue ADD COLUMN gam_impressions INT DEFAULT 0");
+            }
+            if (!in_array('gam_ad_requests', $columns, true)) {
+                getDB()->exec("ALTER TABLE revenue ADD COLUMN gam_ad_requests INT DEFAULT 0");
+            }
+            if (!in_array('site_name', $columns, true)) {
+                getDB()->exec("ALTER TABLE revenue ADD COLUMN site_name VARCHAR(255) NOT NULL DEFAULT ''");
+            } else {
+                try {
+                    getDB()->exec("UPDATE revenue SET site_name = '' WHERE site_name IS NULL");
+                    getDB()->exec("ALTER TABLE revenue MODIFY site_name VARCHAR(255) NOT NULL DEFAULT ''");
+                } catch (Exception $e) {
+                }
+            }
+
+            ensureMySQLRevenueUniqueIndex();
+        } else {
+            getDB()->exec("CREATE TABLE IF NOT EXISTS revenue (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date DATE NOT NULL,
+                campaign_id VARCHAR(50) NOT NULL,
+                utm_campaign VARCHAR(255),
+                receita_usd DECIMAL(12,6) DEFAULT 0,
+                gam_impressions INTEGER DEFAULT 0,
+                gam_ad_requests INTEGER DEFAULT 0,
+                site_name VARCHAR(255) DEFAULT '',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(date, campaign_id, site_name)
+            )");
+
+            $columns = array_column(fetchAll("PRAGMA table_info(revenue)"), 'name');
+            if (!in_array('gam_impressions', $columns, true)) {
+                getDB()->exec("ALTER TABLE revenue ADD COLUMN gam_impressions INTEGER DEFAULT 0");
+            }
+            if (!in_array('gam_ad_requests', $columns, true)) {
+                getDB()->exec("ALTER TABLE revenue ADD COLUMN gam_ad_requests INTEGER DEFAULT 0");
+            }
+            if (!in_array('site_name', $columns, true)) {
+                getDB()->exec("ALTER TABLE revenue ADD COLUMN site_name VARCHAR(255) DEFAULT ''");
+            }
+            getDB()->exec("UPDATE revenue SET site_name = '' WHERE site_name IS NULL");
+
+            if (!sqliteRevenueHasUniqueSiteIndex()) {
+                migrateSQLiteRevenueTableToSiteUnique();
+            }
+        }
+
+        $ensured = true;
+    } catch (Exception $e) {
+        if (function_exists('logSync')) {
+            logSync('GAM', 'ERROR', 'revenue_schema', 'Falha ao preparar tabela revenue para sync GAM: ' . $e->getMessage());
+        }
+        throw $e;
+    }
+}
+
+function ensureMySQLRevenueUniqueIndex() {
+    try {
+        $indexes = fetchAll("SHOW INDEX FROM revenue WHERE Non_unique = 0");
+    } catch (Exception $e) {
+        return;
+    }
+
+    $grouped = [];
+    foreach ($indexes as $idx) {
+        $name = $idx['Key_name'] ?? '';
+        if ($name === '' || strtoupper($name) === 'PRIMARY') {
+            continue;
+        }
+        $seq = (int)($idx['Seq_in_index'] ?? 0);
+        $grouped[$name][$seq] = $idx['Column_name'] ?? '';
+    }
+
+    $hasDesired = false;
+    foreach ($grouped as $name => $colsBySeq) {
+        ksort($colsBySeq);
+        $cols = array_values(array_filter($colsBySeq));
+        if ($cols === ['date', 'campaign_id', 'site_name']) {
+            $hasDesired = true;
+            continue;
+        }
+        if ($cols === ['date', 'campaign_id']) {
+            $safeName = str_replace('`', '``', $name);
+            try {
+                getDB()->exec("ALTER TABLE revenue DROP INDEX `{$safeName}`");
+            } catch (Exception $e) {
+            }
+        }
+    }
+
+    if (!$hasDesired) {
+        try {
+            getDB()->exec("ALTER TABLE revenue ADD UNIQUE KEY unique_revenue_date_campaign_site (date, campaign_id, site_name)");
+        } catch (Exception $e) {
+        }
+    }
+}
+
+function sqliteRevenueHasUniqueSiteIndex() {
+    $indexes = fetchAll("PRAGMA index_list('revenue')");
+    foreach ($indexes as $idx) {
+        if ((int)($idx['unique'] ?? 0) !== 1) {
+            continue;
+        }
+
+        $indexName = $idx['name'] ?? '';
+        if ($indexName === '') {
+            continue;
+        }
+
+        $quoted = getDB()->quote($indexName);
+        $info = getDB()->query("PRAGMA index_info({$quoted})")->fetchAll(PDO::FETCH_ASSOC);
+        $cols = array_column($info, 'name');
+        if ($cols === ['date', 'campaign_id', 'site_name']) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function migrateSQLiteRevenueTableToSiteUnique() {
+    $db = getDB();
+    $tmp = 'revenue_migration_' . time();
+
+    $db->beginTransaction();
+    try {
+        $db->exec("CREATE TABLE {$tmp} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date DATE NOT NULL,
+            campaign_id VARCHAR(50) NOT NULL,
+            utm_campaign VARCHAR(255),
+            receita_usd DECIMAL(12,6) DEFAULT 0,
+            gam_impressions INTEGER DEFAULT 0,
+            gam_ad_requests INTEGER DEFAULT 0,
+            site_name VARCHAR(255) DEFAULT '',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(date, campaign_id, site_name)
+        )");
+
+        $db->exec("INSERT INTO {$tmp} (
+                date, campaign_id, utm_campaign, receita_usd,
+                gam_impressions, gam_ad_requests, site_name, created_at
+            )
+            SELECT
+                date,
+                campaign_id,
+                COALESCE(MAX(NULLIF(utm_campaign, '')), campaign_id),
+                COALESCE(SUM(receita_usd), 0),
+                COALESCE(SUM(gam_impressions), 0),
+                COALESCE(SUM(gam_ad_requests), 0),
+                COALESCE(site_name, ''),
+                COALESCE(MIN(created_at), datetime('now'))
+            FROM revenue
+            GROUP BY date, campaign_id, COALESCE(site_name, '')");
+
+        $db->exec("DROP TABLE revenue");
+        $db->exec("ALTER TABLE {$tmp} RENAME TO revenue");
+        $db->commit();
+    } catch (Exception $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        throw $e;
+    }
+}
+
+/**
  * Ensure revenue_placements table exists (compatible with SQLite and MySQL)
  */
 function ensurePlacementsTable() {

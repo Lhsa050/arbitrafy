@@ -14,6 +14,10 @@ $_SESSION['user'] = 'admin';
 require_once __DIR__ . '/includes/db.php';
 require_once __DIR__ . '/includes/helpers.php';
 
+if (function_exists('ensureRevenueTableSchema')) {
+    ensureRevenueTableSchema();
+}
+
 echo "=== GAM CLI Sync v3 ===\n\n";
 
 $token = null;
@@ -312,7 +316,8 @@ foreach ($dailyTotals as $date => $data) {
                 'receita_usd' => $totalDayRevenue,
                 'gam_impressions' => $totalDayImpressions,
                 'gam_ad_requests' => $totalDayAdRequests,
-            ], ['date', 'campaign_id']);
+                'site_name' => '',
+            ], ['date', 'campaign_id', 'site_name']);
             $imported++;
             echo "  {$date}: \${$totalDayRevenue} ({$totalDayImpressions} imp, {$totalDayAdRequests} req, no breakdown)\n";
         }
@@ -346,7 +351,8 @@ foreach ($dailyTotals as $date => $data) {
                 'receita_usd' => round($scaledRev, 6),
                 'gam_impressions' => $scaledImp,
                 'gam_ad_requests' => $scaledReq,
-            ], ['date', 'campaign_id']);
+                'site_name' => '',
+            ], ['date', 'campaign_id', 'site_name']);
             $imported++;
         }
         

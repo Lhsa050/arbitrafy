@@ -817,11 +817,8 @@ function doSyncGAM()
         }
         $hasSites = !empty($gamSites);
 
-        // Ensure revenue table has site_name column
-        try {
-            getDB()->exec("ALTER TABLE revenue ADD COLUMN site_name VARCHAR(255) DEFAULT ''");
-        } catch (Exception $e) {
-            // Column already exists
+        if (function_exists('ensureRevenueTableSchema')) {
+            ensureRevenueTableSchema();
         }
 
         // ====================================================
