@@ -85,7 +85,7 @@ if ($viewMode === 'diario') {
             COALESCE(fc.viz_lp, 0) as viz_lp,
             COALESCE(fc.custo_viz_lp, 0) as custo_viz_lp,
             COALESCE(rv.rev_usd, 0) * {$cotacao} as revenue,
-            COALESCE(gs.sessions, 0) as ga4_sessions
+            COALESCE(gs_id.sessions, gs_name.sessions, 0) as ga4_sessions
         FROM fb_campaigns fc
         LEFT JOIN (
             SELECT date, campaign_id, SUM(receita_usd) as rev_usd
@@ -96,7 +96,12 @@ if ($viewMode === 'diario') {
             SELECT date, campaign_id, SUM(sessions) as sessions
             FROM ga4_sessions
             GROUP BY date, campaign_id
-        ) gs ON gs.campaign_id = fc.campaign_id AND gs.date = fc.date
+        ) gs_id ON gs_id.campaign_id = fc.campaign_id AND gs_id.date = fc.date
+        LEFT JOIN (
+            SELECT date, campaign_id, SUM(sessions) as sessions
+            FROM ga4_sessions
+            GROUP BY date, campaign_id
+        ) gs_name ON gs_name.campaign_id = fc.campaign_name AND gs_name.date = fc.date
         {$where}
         ORDER BY {$orderBy}
         LIMIT 1000
@@ -135,7 +140,7 @@ if ($viewMode === 'diario') {
             COALESCE(SUM(fc.viz_lp), 0) as viz_lp,
             CASE WHEN COALESCE(SUM(fc.viz_lp), 0) > 0 THEN SUM(fc.investimento) / SUM(fc.viz_lp) ELSE 0 END as custo_viz_lp,
             COALESCE(SUM(rv.rev_usd), 0) * {$cotacao} as revenue,
-            COALESCE(SUM(gs.sessions), 0) as ga4_sessions
+            COALESCE(SUM(COALESCE(gs_id.sessions, gs_name.sessions, 0)), 0) as ga4_sessions
         FROM fb_campaigns fc
         LEFT JOIN (
             SELECT date, campaign_id, SUM(receita_usd) as rev_usd
@@ -146,7 +151,12 @@ if ($viewMode === 'diario') {
             SELECT date, campaign_id, SUM(sessions) as sessions
             FROM ga4_sessions
             GROUP BY date, campaign_id
-        ) gs ON gs.campaign_id = fc.campaign_id AND gs.date = fc.date
+        ) gs_id ON gs_id.campaign_id = fc.campaign_id AND gs_id.date = fc.date
+        LEFT JOIN (
+            SELECT date, campaign_id, SUM(sessions) as sessions
+            FROM ga4_sessions
+            GROUP BY date, campaign_id
+        ) gs_name ON gs_name.campaign_id = fc.campaign_name AND gs_name.date = fc.date
         {$where}
         GROUP BY fc.campaign_id, fc.campaign_name, fc.account_name
         ORDER BY {$orderBy}

@@ -202,6 +202,261 @@ function ensureGA4Table() {
     }
 }
 
+function buildGA4SourceFilter($utmSource) {
+    $sources = preg_split('/[,;|]+/', (string)$utmSource);
+    $expressions = [];
+
+    foreach ($sources as $source) {
+        $source = trim($source);
+        if ($source === '') {
+            continue;
+        }
+
+        foreach (['sessionSource', 'sessionManualSource'] as $fieldName) {
+            $expressions[] = [
+                'filter' => [
+                    'fieldName' => $fieldName,
+                    'stringFilter' => [
+                        'matchType' => 'EXACT',
+                        'value' => $source,
+                        'caseSensitive' => false,
+                    ],
+                ],
+            ];
+        }
+    }
+
+    if (count($expressions) === 1) {
+        return $expressions[0];
+    }
+
+    if (!empty($expressions)) {
+        return ['orGroup' => ['expressions' => $expressions]];
+    }
+
+    return null;
+}
+
+function buildGA4SessionsRequestBody($since, $until, $utmSource, $limit = 10000) {
+    $body = [
+        'dateRanges' => [
+            ['startDate' => $since, 'endDate' => $until],
+        ],
+        'dimensions' => [
+            ['name' => 'date'],
+            ['name' => 'sessionCampaignId'],
+            ['name' => 'sessionManualCampaignId'],
+            ['name' => 'sessionCampaignName'],
+            ['name' => 'sessionManualCampaignName'],
+        ],
+        'metrics' => [
+            ['name' => 'sessions'],
+        ],
+        'limit' => $limit,
+        'keepEmptyRows' => false,
+    ];
+
+    $sourceFilter = buildGA4SourceFilter($utmSource);
+    if ($sourceFilter) {
+        $body['dimensionFilter'] = $sourceFilter;
+    }
+
+    return $body;
+}
+
+function parseGA4ApiDate($dateRaw) {
+    $dateRaw = trim((string)$dateRaw);
+    if (preg_match('/^\d{8}$/', $dateRaw)) {
+        return substr($dateRaw, 0, 4) . '-' . substr($dateRaw, 4, 2) . '-' . substr($dateRaw, 6, 2);
+    }
+    if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $dateRaw)) {
+        return $dateRaw;
+    }
+    return null;
+}
+
+function cleanGA4CampaignValue($value) {
+    $value = trim((string)$value);
+    if ($value === '' || $value === '(not set)' || $value === '(organic)' || $value === '(direct)') {
+        return '';
+    }
+
+    $decoded = html_entity_decode($value, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    $decoded = rawurldecode(str_replace('+', ' ', $decoded));
+    $decoded = preg_replace('/\s+/', ' ', trim($decoded));
+
+    return $decoded;
+}
+
+function normalizeCampaignLookupKey($value) {
+    $value = cleanGA4CampaignValue($value);
+    if ($value === '') {
+        return '';
+    }
+
+    if (function_exists('mb_strtolower')) {
+        $value = mb_strtolower($value, 'UTF-8');
+    } else {
+        $value = strtolower($value);
+    }
+
+    return preg_replace('/\s+/', ' ', trim($value));
+}
+
+function extractNumericCampaignId($value) {
+    $value = cleanGA4CampaignValue($value);
+    if ($value === '') {
+        return null;
+    }
+
+    if (preg_match('/^\d{5,}$/', $value)) {
+        return $value;
+    }
+
+    if (preg_match('/(?:^|[^\d])(\d{10,})(?:[^\d]|$)/', $value, $matches)) {
+        return $matches[1];
+    }
+
+    return null;
+}
+
+function buildFBCampaignLookup($since, $until) {
+    $lookup = [
+        'ids' => [],
+        'by_date_name' => [],
+        'by_name' => [],
+    ];
+
+    try {
+        $rows = fetchAll("
+            SELECT date, campaign_id, campaign_name
+            FROM fb_campaigns
+            WHERE date BETWEEN ? AND ?
+              AND campaign_id != ''
+              AND campaign_name != ''
+        ", [$since, $until]);
+    } catch (Exception $e) {
+        return $lookup;
+    }
+
+    foreach ($rows as $row) {
+        $id = (string)($row['campaign_id'] ?? '');
+        $date = (string)($row['date'] ?? '');
+        $nameKey = normalizeCampaignLookupKey($row['campaign_name'] ?? '');
+        if ($id === '') {
+            continue;
+        }
+
+        $lookup['ids'][$id] = true;
+
+        if ($nameKey !== '') {
+            $lookup['by_date_name'][$date][$nameKey][$id] = true;
+            $lookup['by_name'][$nameKey][$id] = true;
+        }
+    }
+
+    return $lookup;
+}
+
+function resolveGA4CampaignId($date, array $values, array $lookup) {
+    foreach ($values as $value) {
+        $id = extractNumericCampaignId($value);
+        if ($id) {
+            return [$id, 'numeric'];
+        }
+    }
+
+    foreach ($values as $value) {
+        $nameKey = normalizeCampaignLookupKey($value);
+        if ($nameKey === '') {
+            continue;
+        }
+
+        $dateMatches = $lookup['by_date_name'][$date][$nameKey] ?? [];
+        if (count($dateMatches) === 1) {
+            return [array_key_first($dateMatches), 'fb_name_date'];
+        }
+
+        $allMatches = $lookup['by_name'][$nameKey] ?? [];
+        if (count($allMatches) === 1) {
+            return [array_key_first($allMatches), 'fb_name'];
+        }
+    }
+
+    foreach ($values as $value) {
+        $clean = cleanGA4CampaignValue($value);
+        if ($clean !== '') {
+            return [$clean, 'raw_name'];
+        }
+    }
+
+    return [null, 'unmatched'];
+}
+
+function parseGA4SessionRows(array $rows, array $campaignLookup) {
+    $parsed = [];
+    $stats = [
+        'imported' => 0,
+        'sessions' => 0,
+        'numeric' => 0,
+        'fb_name_date' => 0,
+        'fb_name' => 0,
+        'raw_name' => 0,
+        'unmatched' => 0,
+        'unmatched_samples' => [],
+    ];
+
+    foreach ($rows as $row) {
+        $dimensionValues = $row['dimensionValues'] ?? [];
+        $metricValues = $row['metricValues'] ?? [];
+
+        if (count($dimensionValues) < 2 || count($metricValues) < 1) {
+            continue;
+        }
+
+        $date = parseGA4ApiDate($dimensionValues[0]['value'] ?? '');
+        if (!$date) {
+            continue;
+        }
+
+        $campaignValues = [
+            $dimensionValues[1]['value'] ?? '',
+            $dimensionValues[2]['value'] ?? '',
+            $dimensionValues[3]['value'] ?? '',
+            $dimensionValues[4]['value'] ?? '',
+        ];
+        [$campaignId, $matchMode] = resolveGA4CampaignId($date, $campaignValues, $campaignLookup);
+        $sessions = (int)($metricValues[0]['value'] ?? 0);
+
+        if (!$campaignId || $sessions <= 0) {
+            $stats['unmatched']++;
+            if (count($stats['unmatched_samples']) < 8) {
+                $stats['unmatched_samples'][] = $date . ': ' . implode(' | ', array_filter(array_map('cleanGA4CampaignValue', $campaignValues)));
+            }
+            continue;
+        }
+
+        if (!isset($stats[$matchMode])) {
+            $stats[$matchMode] = 0;
+        }
+        $stats[$matchMode]++;
+        $stats['imported']++;
+        $stats['sessions'] += $sessions;
+
+        $key = $date . '|' . $campaignId;
+        if (!isset($parsed[$key])) {
+            $parsed[$key] = [
+                'date' => $date,
+                'campaign_id' => $campaignId,
+                'sessions' => 0,
+            ];
+        }
+        $parsed[$key]['sessions'] += $sessions;
+    }
+
+    return [array_values($parsed), $stats];
+}
+
 /**
  * Ensure revenue table supports GAM site breakdowns and newer metrics.
  * Older installs created revenue with UNIQUE(date, campaign_id), which

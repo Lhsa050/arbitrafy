@@ -1944,29 +1944,7 @@ function doSyncGA4()
 
     $url = "https://analyticsdata.googleapis.com/v1beta/properties/{$propertyId}:runReport";
 
-    $requestBody = [
-        'dateRanges' => [
-            ['startDate' => $since, 'endDate' => $until]
-        ],
-        'dimensions' => [
-            ['name' => 'date'],
-            ['name' => 'sessionCampaignId']
-        ],
-        'metrics' => [
-            ['name' => 'sessions']
-        ],
-        'dimensionFilter' => [
-            'filter' => [
-                'fieldName' => 'sessionSource',
-                'stringFilter' => [
-                    'matchType' => 'EXACT',
-                    'value' => $utmSource
-                ]
-            ]
-        ],
-        'limit' => 10000,
-        'keepEmptyRows' => false
-    ];
+    $requestBody = buildGA4SessionsRequestBody($since, $until, $utmSource);
 
     $ch = curl_init($url);
     curl_setopt_array($ch, [
@@ -1994,45 +1972,46 @@ function doSyncGA4()
     }
 
     $rows = $data['rows'] ?? [];
-    $imported = 0;
+    $campaignLookup = buildFBCampaignLookup($since, $until);
+    [$sessionRows, $stats] = parseGA4SessionRows($rows, $campaignLookup);
 
-    foreach ($rows as $row) {
-        $dimensionValues = $row['dimensionValues'] ?? [];
-        $metricValues = $row['metricValues'] ?? [];
+    if (!empty($rows)) {
+        query("DELETE FROM ga4_sessions WHERE date >= ? AND utm_source = ?", [$since, $utmSource]);
 
-        if (count($dimensionValues) < 2 || count($metricValues) < 1) continue;
-
-        $dateRaw = $dimensionValues[0]['value'] ?? '';
-        $campaignId = $dimensionValues[1]['value'] ?? '';
-        $sessions = (int)($metricValues[0]['value'] ?? 0);
-
-        if (strlen($dateRaw) === 8) {
-            $date = substr($dateRaw, 0, 4) . '-' . substr($dateRaw, 4, 2) . '-' . substr($dateRaw, 6, 2);
-        } else {
-            continue;
-        }
-
-        if (empty($campaignId) || $campaignId === '(not set)' || $campaignId === '(organic)') continue;
-        if (!preg_match('/^\d{5,}$/', $campaignId)) continue;
-
-        if ($sessions > 0) {
+        foreach ($sessionRows as $sessionRow) {
             upsert('ga4_sessions', [
-                'date' => $date,
-                'campaign_id' => $campaignId,
+                'date' => $sessionRow['date'],
+                'campaign_id' => $sessionRow['campaign_id'],
                 'utm_source' => $utmSource,
-                'sessions' => $sessions,
+                'sessions' => $sessionRow['sessions'],
             ], ['date', 'campaign_id', 'utm_source']);
-            $imported++;
         }
     }
 
     $durationMs = round((microtime(true) - $syncStart) * 1000);
-    logSync('GA4', 'INFO', 'sync_complete', "GA4 sync OK: {$imported} registros ({$durationMs}ms)", null, null, $durationMs);
+    $details = [
+        'api_rows' => count($rows),
+        'imported_rows' => count($sessionRows),
+        'sessions' => $stats['sessions'],
+        'match_modes' => [
+            'numeric' => $stats['numeric'],
+            'fb_name_date' => $stats['fb_name_date'],
+            'fb_name' => $stats['fb_name'],
+            'raw_name' => $stats['raw_name'],
+        ],
+        'unmatched' => $stats['unmatched'],
+        'unmatched_samples' => $stats['unmatched_samples'],
+    ];
+    logSync('GA4', 'INFO', 'sync_complete', "GA4 sync OK: " . count($sessionRows) . " registros, {$stats['sessions']} sessoes ({$durationMs}ms)", $details, null, $durationMs);
 
     echo json_encode([
         'success' => true,
-        'message' => "GA4 sincronizado! {$imported} registros.",
-        'imported' => $imported,
+        'message' => "GA4 sincronizado! " . count($sessionRows) . " registros, {$stats['sessions']} sessoes.",
+        'imported' => count($sessionRows),
+        'sessions' => $stats['sessions'],
+        'total_rows' => count($rows),
+        'match_modes' => $details['match_modes'],
+        'unmatched' => $stats['unmatched'],
     ]);
     exit;
 }
