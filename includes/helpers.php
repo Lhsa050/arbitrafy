@@ -237,7 +237,7 @@ function buildGA4SourceFilter($utmSource) {
     return null;
 }
 
-function buildGA4SessionsRequestBody($since, $until, $utmSource, $limit = 10000) {
+function buildGA4SessionsRequestBody($since, $until, $utmSource, $limit = 10000, $withSourceFilter = true) {
     $body = [
         'dateRanges' => [
             ['startDate' => $since, 'endDate' => $until],
@@ -256,12 +256,90 @@ function buildGA4SessionsRequestBody($since, $until, $utmSource, $limit = 10000)
         'keepEmptyRows' => false,
     ];
 
-    $sourceFilter = buildGA4SourceFilter($utmSource);
+    $sourceFilter = $withSourceFilter ? buildGA4SourceFilter($utmSource) : null;
     if ($sourceFilter) {
         $body['dimensionFilter'] = $sourceFilter;
     }
 
     return $body;
+}
+
+function buildGA4LandingPageRequestBody($since, $until, $utmSource, $limit = 10000, $withSourceFilter = true) {
+    $body = [
+        'dateRanges' => [
+            ['startDate' => $since, 'endDate' => $until],
+        ],
+        'dimensions' => [
+            ['name' => 'date'],
+            ['name' => 'fullPageUrl'],
+        ],
+        'metrics' => [
+            ['name' => 'sessions'],
+        ],
+        'dimensionFilter' => [
+            'filter' => [
+                'fieldName' => 'fullPageUrl',
+                'stringFilter' => [
+                    'matchType' => 'CONTAINS',
+                    'value' => 'utm_',
+                    'caseSensitive' => false,
+                ],
+            ],
+        ],
+        'limit' => $limit,
+        'keepEmptyRows' => false,
+    ];
+
+    $sourceFilter = $withSourceFilter ? buildGA4SourceFilter($utmSource) : null;
+    if ($sourceFilter) {
+        $body['dimensionFilter'] = [
+            'andGroup' => [
+                'expressions' => [
+                    $body['dimensionFilter'],
+                    $sourceFilter,
+                ],
+            ],
+        ];
+    }
+
+    return $body;
+}
+
+function fetchGA4RunReport($propertyId, $token, array $requestBody, $timeout = 60) {
+    $url = "https://analyticsdata.googleapis.com/v1beta/properties/{$propertyId}:runReport";
+
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => json_encode($requestBody),
+        CURLOPT_HTTPHEADER => [
+            'Authorization: Bearer ' . $token,
+            'Content-Type: application/json',
+        ],
+        CURLOPT_SSL_VERIFYPEER => false,
+        CURLOPT_TIMEOUT => $timeout,
+    ]);
+    $responseText = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlError = curl_error($ch);
+    curl_close($ch);
+
+    if ($curlError) {
+        throw new Exception("cURL error: {$curlError}");
+    }
+
+    $data = json_decode($responseText, true);
+    if ($httpCode >= 400 || isset($data['error'])) {
+        $errMsg = $data['error']['message'] ?? "HTTP {$httpCode}";
+        throw new Exception($errMsg);
+    }
+
+    return [
+        'data' => $data ?: [],
+        'rows' => $data['rows'] ?? [],
+        'http_code' => $httpCode,
+    ];
 }
 
 function parseGA4ApiDate($dateRaw) {
@@ -359,10 +437,17 @@ function buildFBCampaignLookup($since, $until) {
 }
 
 function resolveGA4CampaignId($date, array $values, array $lookup) {
+    $numericFallback = null;
+
     foreach ($values as $value) {
         $id = extractNumericCampaignId($value);
         if ($id) {
-            return [$id, 'numeric'];
+            if (empty($lookup['ids']) || isset($lookup['ids'][$id])) {
+                return [$id, 'numeric'];
+            }
+            if ($numericFallback === null) {
+                $numericFallback = $id;
+            }
         }
     }
 
@@ -385,9 +470,16 @@ function resolveGA4CampaignId($date, array $values, array $lookup) {
 
     foreach ($values as $value) {
         $clean = cleanGA4CampaignValue($value);
+        if (preg_match('/^\d{5,}$/', $clean)) {
+            continue;
+        }
         if ($clean !== '') {
             return [$clean, 'raw_name'];
         }
+    }
+
+    if ($numericFallback !== null) {
+        return [$numericFallback, 'numeric'];
     }
 
     return [null, 'unmatched'];
@@ -455,6 +547,193 @@ function parseGA4SessionRows(array $rows, array $campaignLookup) {
     }
 
     return [array_values($parsed), $stats];
+}
+
+function extractGA4UtmValuesFromUrl($url) {
+    $url = html_entity_decode((string)$url, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    $values = [];
+
+    $query = parse_url($url, PHP_URL_QUERY);
+    if ($query !== null && $query !== false && $query !== '') {
+        parse_str($query, $params);
+        foreach (['utm_campaign', 'utm_id', 'campaign_id', 'campaignid', 'fb_campaign_id', 'campaign'] as $key) {
+            if (!empty($params[$key])) {
+                $values[] = is_array($params[$key]) ? reset($params[$key]) : $params[$key];
+            }
+        }
+    }
+
+    foreach (['utm_campaign', 'utm_id', 'campaign_id', 'campaignid', 'fb_campaign_id', 'campaign'] as $key) {
+        if (preg_match('/(?:[?&]|^)' . preg_quote($key, '/') . '=([^&#]+)/i', $url, $matches)) {
+            $values[] = rawurldecode(str_replace('+', ' ', $matches[1]));
+        }
+    }
+
+    return array_values(array_unique(array_filter($values, function ($value) {
+        return trim((string)$value) !== '';
+    })));
+}
+
+function parseGA4LandingPageRows(array $rows, array $campaignLookup) {
+    $parsed = [];
+    $stats = [
+        'imported' => 0,
+        'sessions' => 0,
+        'numeric' => 0,
+        'fb_name_date' => 0,
+        'fb_name' => 0,
+        'raw_name' => 0,
+        'unmatched' => 0,
+        'unmatched_samples' => [],
+    ];
+
+    foreach ($rows as $row) {
+        $dimensionValues = $row['dimensionValues'] ?? [];
+        $metricValues = $row['metricValues'] ?? [];
+        if (count($dimensionValues) < 2 || count($metricValues) < 1) {
+            continue;
+        }
+
+        $date = parseGA4ApiDate($dimensionValues[0]['value'] ?? '');
+        $pageUrl = $dimensionValues[1]['value'] ?? '';
+        $sessions = (int)($metricValues[0]['value'] ?? 0);
+        if (!$date || $sessions <= 0) {
+            continue;
+        }
+
+        $campaignValues = extractGA4UtmValuesFromUrl($pageUrl);
+        [$campaignId, $matchMode] = resolveGA4CampaignId($date, $campaignValues, $campaignLookup);
+        if (!$campaignId) {
+            $stats['unmatched']++;
+            if (count($stats['unmatched_samples']) < 8) {
+                $stats['unmatched_samples'][] = $date . ': ' . implode(' | ', array_slice($campaignValues, 0, 3));
+            }
+            continue;
+        }
+
+        if (!isset($stats[$matchMode])) {
+            $stats[$matchMode] = 0;
+        }
+        $stats[$matchMode]++;
+        $stats['imported']++;
+        $stats['sessions'] += $sessions;
+
+        $key = $date . '|' . $campaignId;
+        if (!isset($parsed[$key])) {
+            $parsed[$key] = [
+                'date' => $date,
+                'campaign_id' => $campaignId,
+                'sessions' => 0,
+            ];
+        }
+        $parsed[$key]['sessions'] += $sessions;
+    }
+
+    return [array_values($parsed), $stats];
+}
+
+function mergeGA4SessionRowsWithoutDuplicates(array $primaryRows, array $fallbackRows) {
+    $merged = [];
+
+    foreach ($primaryRows as $row) {
+        $key = ($row['date'] ?? '') . '|' . ($row['campaign_id'] ?? '');
+        if ($key === '|') {
+            continue;
+        }
+        $merged[$key] = $row;
+    }
+
+    foreach ($fallbackRows as $row) {
+        $key = ($row['date'] ?? '') . '|' . ($row['campaign_id'] ?? '');
+        if ($key === '|' || isset($merged[$key])) {
+            continue;
+        }
+        $merged[$key] = $row;
+    }
+
+    return array_values($merged);
+}
+
+function addGA4SessionFallbackRows($propertyId, $token, $since, $until, $utmSource, array $campaignLookup, array $sessionRows, array $stats) {
+    $fallbackReports = [];
+    $indexedRows = [];
+
+    foreach ($sessionRows as $row) {
+        $key = ($row['date'] ?? '') . '|' . ($row['campaign_id'] ?? '');
+        if ($key !== '|') {
+            $indexedRows[$key] = $row;
+        }
+    }
+
+    if (!empty($sessionRows) && (int)($stats['unmatched'] ?? 0) <= 0) {
+        return [$sessionRows, $stats, $fallbackReports];
+    }
+
+    $fallbacks = [
+        [
+            'name' => 'campaign_unfiltered',
+            'type' => 'campaign',
+            'body' => buildGA4SessionsRequestBody($since, $until, $utmSource, 10000, false),
+        ],
+        [
+            'name' => 'url_filtered',
+            'type' => 'url',
+            'body' => buildGA4LandingPageRequestBody($since, $until, $utmSource),
+        ],
+        [
+            'name' => 'url_unfiltered',
+            'type' => 'url',
+            'body' => buildGA4LandingPageRequestBody($since, $until, $utmSource, 10000, false),
+        ],
+    ];
+
+    foreach ($fallbacks as $fallback) {
+        try {
+            $report = fetchGA4RunReport($propertyId, $token, $fallback['body']);
+            if ($fallback['type'] === 'url') {
+                [$fallbackRows, $fallbackStats] = parseGA4LandingPageRows($report['rows'], $campaignLookup);
+            } else {
+                [$fallbackRows, $fallbackStats] = parseGA4SessionRows($report['rows'], $campaignLookup);
+            }
+
+            $addedRows = 0;
+            $addedSessions = 0;
+            foreach ($fallbackRows as $row) {
+                $key = ($row['date'] ?? '') . '|' . ($row['campaign_id'] ?? '');
+                if ($key === '|' || isset($indexedRows[$key])) {
+                    continue;
+                }
+                $indexedRows[$key] = $row;
+                $addedRows++;
+                $addedSessions += (int)($row['sessions'] ?? 0);
+            }
+
+            $fallbackReports[] = [
+                'name' => $fallback['name'],
+                'api_rows' => count($report['rows']),
+                'parsed_rows' => count($fallbackRows),
+                'added_rows' => $addedRows,
+                'added_sessions' => $addedSessions,
+                'parsed_sessions' => $fallbackStats['sessions'],
+                'unmatched' => $fallbackStats['unmatched'],
+                'unmatched_samples' => $fallbackStats['unmatched_samples'],
+            ];
+        } catch (Exception $e) {
+            $fallbackReports[] = [
+                'name' => $fallback['name'],
+                'error' => $e->getMessage(),
+            ];
+        }
+    }
+
+    $sessionRows = array_values($indexedRows);
+    $stats['imported'] = count($sessionRows);
+    $stats['sessions'] = 0;
+    foreach ($sessionRows as $row) {
+        $stats['sessions'] += (int)($row['sessions'] ?? 0);
+    }
+
+    return [$sessionRows, $stats, $fallbackReports];
 }
 
 /**

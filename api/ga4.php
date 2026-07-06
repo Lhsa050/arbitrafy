@@ -135,8 +135,18 @@ function syncGA4() {
     $rows = $data['rows'] ?? [];
     $campaignLookup = buildFBCampaignLookup($since, $until);
     [$sessionRows, $stats] = parseGA4SessionRows($rows, $campaignLookup);
+    [$sessionRows, $stats, $fallbackReports] = addGA4SessionFallbackRows(
+        $propertyId,
+        $token,
+        $since,
+        $until,
+        $utmSource,
+        $campaignLookup,
+        $sessionRows,
+        $stats
+    );
 
-    if (!empty($rows)) {
+    if (!empty($rows) || !empty($sessionRows)) {
         query("DELETE FROM ga4_sessions WHERE date >= ? AND utm_source = ?", [$since, $utmSource]);
 
         foreach ($sessionRows as $sessionRow) {
@@ -161,6 +171,7 @@ function syncGA4() {
         ],
         'unmatched' => $stats['unmatched'],
         'unmatched_samples' => $stats['unmatched_samples'],
+        'fallback_reports' => $fallbackReports,
     ];
     logSync('GA4', 'INFO', 'sync_complete', "GA4 sync OK: " . count($sessionRows) . " registros, {$stats['sessions']} sessoes (utm_source={$utmSource})", $details, $httpCode);
     $imported = count($sessionRows);
@@ -173,6 +184,7 @@ function syncGA4() {
         'total_rows' => count($rows),
         'match_modes' => $details['match_modes'],
         'unmatched' => $stats['unmatched'],
+        'fallback_reports' => $fallbackReports,
     ]);
 }
 
