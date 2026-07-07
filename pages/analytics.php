@@ -23,6 +23,7 @@ if ($search) {
     $params[] = "%{$search}%";
     $params[] = "%{$search}%";
 }
+$fbWhere = str_replace('fc.', '', $where);
 
 // Sort
 $sortMap = [
@@ -52,20 +53,37 @@ $sortMap = [
     'cvlp_asc' => 'custo_viz_lp ASC',
     'rev_desc' => 'revenue DESC',
     'rev_asc' => 'revenue ASC',
-    'roi_desc' => 'roi DESC',
-    'roi_asc' => 'roi ASC',
-    'lucro_desc' => 'lucro DESC',
-    'lucro_asc' => 'lucro ASC',
-    'rps_desc' => 'rps DESC',
-    'rps_asc' => 'rps ASC',
-    'rpc_desc' => 'rpc DESC',
-    'rpc_asc' => 'rpc ASC',
-    'spread_desc' => 'revenue DESC',
-    'spread_asc' => 'revenue ASC',
-    'cr_desc' => 'connect_rate DESC',
-    'cr_asc' => 'connect_rate ASC',
+    'roi_desc' => 'fc.date DESC',
+    'roi_asc' => 'fc.date DESC',
+    'lucro_desc' => 'fc.date DESC',
+    'lucro_asc' => 'fc.date DESC',
+    'rps_desc' => 'fc.date DESC',
+    'rps_asc' => 'fc.date DESC',
+    'rpc_desc' => 'fc.date DESC',
+    'rpc_asc' => 'fc.date DESC',
+    'spread_desc' => 'fc.date DESC',
+    'spread_asc' => 'fc.date DESC',
+    'cr_desc' => 'fc.date DESC',
+    'cr_asc' => 'fc.date DESC',
 ];
 $orderBy = $sortMap[$sort] ?? 'fc.date DESC';
+if ($viewMode !== 'diario') {
+    $orderBy = str_replace('fc.date', 'date', $orderBy);
+}
+$derivedSortMap = [
+    'roi_desc' => ['roi', 'desc'],
+    'roi_asc' => ['roi', 'asc'],
+    'lucro_desc' => ['lucro', 'desc'],
+    'lucro_asc' => ['lucro', 'asc'],
+    'rps_desc' => ['rps', 'desc'],
+    'rps_asc' => ['rps', 'asc'],
+    'rpc_desc' => ['rpc', 'desc'],
+    'rpc_asc' => ['rpc', 'asc'],
+    'spread_desc' => ['spread', 'desc'],
+    'spread_asc' => ['spread', 'asc'],
+    'cr_desc' => ['connect_rate', 'desc'],
+    'cr_asc' => ['connect_rate', 'asc'],
+];
 
 if ($viewMode === 'diario') {
     $rows = fetchAll("
@@ -74,19 +92,37 @@ if ($viewMode === 'diario') {
             fc.campaign_id,
             fc.campaign_name,
             fc.account_name,
-            fc.investimento as custo,
+            fc.custo,
             fc.impressoes,
-            fc.cliques as clicks,
-            CASE WHEN fc.cliques > 0 THEN fc.investimento / fc.cliques ELSE 0 END as cpc,
-            CASE WHEN fc.impressoes > 0 THEN (fc.cliques * 100.0 / fc.impressoes) ELSE 0 END as ctr,
-            COALESCE(fc.conv_pct, 0) as conversoes,
-            CASE WHEN fc.impressoes > 0 THEN (fc.investimento / fc.impressoes) * 1000 ELSE 0 END as cpm,
-            COALESCE(fc.cr_pct, 0) as custo_resultado,
-            COALESCE(fc.viz_lp, 0) as viz_lp,
-            COALESCE(fc.custo_viz_lp, 0) as custo_viz_lp,
+            fc.clicks,
+            fc.cpc,
+            fc.ctr,
+            fc.conversoes,
+            fc.cpm,
+            fc.custo_resultado,
+            fc.viz_lp,
+            fc.custo_viz_lp,
             COALESCE(rv.rev_usd, 0) * {$cotacao} as revenue,
             COALESCE(gs_id.sessions, gs_name.sessions, 0) as ga4_sessions
-        FROM fb_campaigns fc
+        FROM (
+            SELECT date,
+                   campaign_id,
+                   MIN(campaign_name) as campaign_name,
+                   MIN(account_name) as account_name,
+                   SUM(investimento) as custo,
+                   SUM(impressoes) as impressoes,
+                   SUM(cliques) as clicks,
+                   CASE WHEN SUM(cliques) > 0 THEN SUM(investimento) / SUM(cliques) ELSE 0 END as cpc,
+                   CASE WHEN SUM(impressoes) > 0 THEN (SUM(cliques) * 100.0 / SUM(impressoes)) ELSE 0 END as ctr,
+                   COALESCE(SUM(conv_pct), 0) as conversoes,
+                   CASE WHEN SUM(impressoes) > 0 THEN (SUM(investimento) / SUM(impressoes)) * 1000 ELSE 0 END as cpm,
+                   CASE WHEN COALESCE(SUM(conv_pct), 0) > 0 THEN SUM(investimento) / SUM(conv_pct) ELSE 0 END as custo_resultado,
+                   COALESCE(SUM(viz_lp), 0) as viz_lp,
+                   CASE WHEN COALESCE(SUM(viz_lp), 0) > 0 THEN SUM(investimento) / SUM(viz_lp) ELSE 0 END as custo_viz_lp
+            FROM fb_campaigns
+            {$fbWhere}
+            GROUP BY date, campaign_id
+        ) fc
         LEFT JOIN (
             SELECT date, campaign_id, SUM(receita_usd) as rev_usd
             FROM revenue
@@ -102,7 +138,6 @@ if ($viewMode === 'diario') {
             FROM ga4_sessions
             GROUP BY date, campaign_id
         ) gs_name ON gs_name.campaign_id = fc.campaign_name AND gs_name.date = fc.date
-        {$where}
         ORDER BY {$orderBy}
         LIMIT 1000
     ", $params);
@@ -119,16 +154,27 @@ if ($viewMode === 'diario') {
         $r['custo_sessao'] = $sessions > 0 ? $custo / $sessions : 0;
         $r['spread'] = $r['rps'] - $r['custo_sessao'];
         $clicks = (int)($r['clicks'] ?? 0);
-        $r['connect_rate'] = $clicks > 0 ? ($sessions / $clicks) * 100 : 0;
+        $r['connect_rate_raw'] = $clicks > 0 ? ($sessions / $clicks) * 100 : 0;
+        $r['connect_rate'] = min(100, $r['connect_rate_raw']);
     }
     unset($r);
+    if (isset($derivedSortMap[$sort])) {
+        [$derivedKey, $derivedDir] = $derivedSortMap[$sort];
+        usort($rows, function($a, $b) use ($derivedKey, $derivedDir) {
+            $cmp = ((float)($a[$derivedKey] ?? 0)) <=> ((float)($b[$derivedKey] ?? 0));
+            if ($cmp === 0) {
+                $cmp = strcmp((string)($a['campaign_name'] ?? ''), (string)($b['campaign_name'] ?? ''));
+            }
+            return $derivedDir === 'desc' ? -$cmp : $cmp;
+        });
+    }
 } else {
     $rows = fetchAll("
         SELECT
             MIN(fc.date) as date,
             fc.campaign_id,
-            fc.campaign_name,
-            fc.account_name,
+            MIN(fc.campaign_name) as campaign_name,
+            MIN(fc.account_name) as account_name,
             SUM(fc.investimento) as custo,
             SUM(fc.impressoes) as impressoes,
             SUM(fc.cliques) as clicks,
@@ -141,7 +187,20 @@ if ($viewMode === 'diario') {
             CASE WHEN COALESCE(SUM(fc.viz_lp), 0) > 0 THEN SUM(fc.investimento) / SUM(fc.viz_lp) ELSE 0 END as custo_viz_lp,
             COALESCE(SUM(rv.rev_usd), 0) * {$cotacao} as revenue,
             COALESCE(SUM(COALESCE(gs_id.sessions, gs_name.sessions, 0)), 0) as ga4_sessions
-        FROM fb_campaigns fc
+        FROM (
+            SELECT date,
+                   campaign_id,
+                   MIN(campaign_name) as campaign_name,
+                   MIN(account_name) as account_name,
+                   SUM(investimento) as investimento,
+                   SUM(impressoes) as impressoes,
+                   SUM(cliques) as cliques,
+                   COALESCE(SUM(conv_pct), 0) as conv_pct,
+                   COALESCE(SUM(viz_lp), 0) as viz_lp
+            FROM fb_campaigns
+            {$fbWhere}
+            GROUP BY date, campaign_id
+        ) fc
         LEFT JOIN (
             SELECT date, campaign_id, SUM(receita_usd) as rev_usd
             FROM revenue
@@ -157,8 +216,7 @@ if ($viewMode === 'diario') {
             FROM ga4_sessions
             GROUP BY date, campaign_id
         ) gs_name ON gs_name.campaign_id = fc.campaign_name AND gs_name.date = fc.date
-        {$where}
-        GROUP BY fc.campaign_id, fc.campaign_name, fc.account_name
+        GROUP BY fc.campaign_id
         ORDER BY {$orderBy}
         LIMIT 500
     ", $params);
@@ -175,9 +233,20 @@ if ($viewMode === 'diario') {
         $r['custo_sessao'] = $sessions > 0 ? $custo / $sessions : 0;
         $r['spread'] = $r['rps'] - $r['custo_sessao'];
         $clicks = (int)($r['clicks'] ?? 0);
-        $r['connect_rate'] = $clicks > 0 ? ($sessions / $clicks) * 100 : 0;
+        $r['connect_rate_raw'] = $clicks > 0 ? ($sessions / $clicks) * 100 : 0;
+        $r['connect_rate'] = min(100, $r['connect_rate_raw']);
     }
     unset($r);
+    if (isset($derivedSortMap[$sort])) {
+        [$derivedKey, $derivedDir] = $derivedSortMap[$sort];
+        usort($rows, function($a, $b) use ($derivedKey, $derivedDir) {
+            $cmp = ((float)($a[$derivedKey] ?? 0)) <=> ((float)($b[$derivedKey] ?? 0));
+            if ($cmp === 0) {
+                $cmp = strcmp((string)($a['campaign_name'] ?? ''), (string)($b['campaign_name'] ?? ''));
+            }
+            return $derivedDir === 'desc' ? -$cmp : $cmp;
+        });
+    }
 }
 
 // Totals
@@ -355,7 +424,7 @@ ob_start();
                     <td class="hm-cell <?= $r['lucro'] >= 0 ? 'positive' : 'negative' ?>" data-val="<?= (float)$r['lucro'] ?>"><?= formatMoney($r['lucro']) ?></td>
                     <td class="hm-cell" data-val="<?= (float)$r['rps'] ?>"><?= $r['rps'] > 0 ? formatMoney($r['rps']) : '-' ?></td>
                     <td class="hm-cell" data-val="<?= (int)($r['ga4_sessions'] ?? 0) ?>"><?= (int)($r['ga4_sessions'] ?? 0) > 0 ? formatNumber($r['ga4_sessions']) : '-' ?></td>
-                    <td class="hm-cell <?= ($r['connect_rate'] ?? 0) >= 70 ? 'positive' : (($r['connect_rate'] ?? 0) > 0 && ($r['connect_rate'] ?? 0) < 60 ? 'negative' : '') ?>" data-val="<?= (float)($r['connect_rate'] ?? 0) ?>"><?= ($r['connect_rate'] ?? 0) > 0 ? formatNumber($r['connect_rate'], 1) . '%' : '-' ?></td>
+                    <td class="hm-cell <?= ($r['connect_rate'] ?? 0) >= 70 ? 'positive' : (($r['connect_rate'] ?? 0) > 0 && ($r['connect_rate'] ?? 0) < 60 ? 'negative' : '') ?>" data-val="<?= (float)($r['connect_rate'] ?? 0) ?>" title="<?= ($r['connect_rate_raw'] ?? 0) > 100 ? 'GA4 maior que cliques. Verifique UTMs/atribuição.' : '' ?>"><?= ($r['connect_rate'] ?? 0) > 0 ? formatNumber($r['connect_rate'], 1) . '%' : '-' ?></td>
                     <td class="hm-cell" data-val="<?= (float)($r['custo_sessao'] ?? 0) ?>"><?= ($r['custo_sessao'] ?? 0) > 0 ? formatMoney($r['custo_sessao']) : '-' ?></td>
                     <td class="hm-cell <?= ($r['spread'] ?? 0) >= 0 ? 'positive' : 'negative' ?>" data-val="<?= (float)($r['spread'] ?? 0) ?>"><?= ($r['ga4_sessions'] ?? 0) > 0 ? formatMoney($r['spread']) : '-' ?></td>
                     <td class="hm-cell" data-val="<?= (float)$r['rpc'] ?>"><?= $r['rpc'] > 0 ? formatMoney($r['rpc']) : '-' ?></td>

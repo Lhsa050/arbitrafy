@@ -33,6 +33,10 @@ function tq_pct($num, $den) {
     return $den > 0 ? ((float)$num / $den) * 100 : 0;
 }
 
+function tq_connect_rate($sessions, $clicks) {
+    return min(100, tq_pct($sessions, $clicks));
+}
+
 function tq_safe_div($num, $den) {
     $den = (float)$den;
     return $den > 0 ? (float)$num / $den : 0;
@@ -66,7 +70,8 @@ function tq_quality_assessment($row, $avgEcpm, $avgRps) {
 
     $ctr = tq_pct($clicks, $impressions);
     $lpRate = tq_pct($lpViews, $clicks);
-    $connectRate = tq_pct($sessions, $clicks);
+    $rawConnectRate = tq_pct($sessions, $clicks);
+    $connectRate = min(100, $rawConnectRate);
     $fillRate = tq_pct($gamImpressions, $gamRequests);
     $ecpm = $gamImpressions > 0 ? ($revenue / $gamImpressions) * 1000 : 0;
     $rpmSession = $sessions > 0 ? ($revenue / $sessions) * 1000 : 0;
@@ -92,6 +97,10 @@ function tq_quality_assessment($row, $avgEcpm, $avgRps) {
             $score -= 12;
             tq_add_flag($flags, $connectRate < 45 ? 'high' : 'medium', 'Connect rate baixo');
         }
+    }
+
+    if ($clicks >= 30 && $rawConnectRate > 105) {
+        tq_add_flag($flags, 'medium', 'Sessoes GA4 acima dos cliques');
     }
 
     if ($clicks >= 30 && $lpViews > 0) {
@@ -168,6 +177,7 @@ function tq_quality_assessment($row, $avgEcpm, $avgRps) {
         'ctr' => $ctr,
         'lp_rate' => $lpRate,
         'connect_rate' => $connectRate,
+        'connect_rate_raw' => $rawConnectRate,
         'fill_rate' => $fillRate,
         'ecpm' => $ecpm,
         'rpm_session' => $rpmSession,
@@ -189,6 +199,7 @@ if ($search !== '') {
     $params[] = "%{$search}%";
     $params[] = "%{$search}%";
 }
+$fbWhere = str_replace('fc.', '', $where);
 
 $accounts = fetchAll("SELECT DISTINCT account_name FROM fb_campaigns ORDER BY account_name");
 
@@ -207,7 +218,20 @@ $campaignRows = fetchAll("
         COALESCE(SUM(rv.gam_impressions), 0) as gam_impressions,
         COALESCE(SUM(rv.gam_ad_requests), 0) as gam_ad_requests,
         COALESCE(SUM(COALESCE(gs_id.sessions, gs_name.sessions, 0)), 0) as ga4_sessions
-    FROM fb_campaigns fc
+    FROM (
+        SELECT date,
+               campaign_id,
+               MIN(campaign_name) as campaign_name,
+               MIN(account_name) as account_name,
+               SUM(investimento) as investimento,
+               SUM(impressoes) as impressoes,
+               SUM(cliques) as cliques,
+               COALESCE(SUM(viz_lp), 0) as viz_lp,
+               COALESCE(SUM(conv_pct), 0) as conv_pct
+        FROM fb_campaigns
+        {$fbWhere}
+        GROUP BY date, campaign_id
+    ) fc
     LEFT JOIN (
         SELECT date, campaign_id, SUM(receita_usd) as rev_usd,
                SUM(gam_impressions) as gam_impressions,
@@ -225,7 +249,6 @@ $campaignRows = fetchAll("
         FROM ga4_sessions
         GROUP BY date, campaign_id
     ) gs_name ON gs_name.campaign_id = fc.campaign_name AND gs_name.date = fc.date
-    {$where}
     GROUP BY fc.campaign_id
 ", $params);
 
@@ -240,7 +263,18 @@ $dailyRows = fetchAll("
         COALESCE(SUM(rv.gam_impressions), 0) as gam_impressions,
         COALESCE(SUM(rv.gam_ad_requests), 0) as gam_ad_requests,
         COALESCE(SUM(COALESCE(gs_id.sessions, gs_name.sessions, 0)), 0) as ga4_sessions
-    FROM fb_campaigns fc
+    FROM (
+        SELECT date,
+               campaign_id,
+               MIN(campaign_name) as campaign_name,
+               SUM(investimento) as investimento,
+               SUM(impressoes) as impressoes,
+               SUM(cliques) as cliques,
+               COALESCE(SUM(viz_lp), 0) as viz_lp
+        FROM fb_campaigns
+        {$fbWhere}
+        GROUP BY date, campaign_id
+    ) fc
     LEFT JOIN (
         SELECT date, campaign_id, SUM(receita_usd) as rev_usd,
                SUM(gam_impressions) as gam_impressions,
@@ -258,7 +292,6 @@ $dailyRows = fetchAll("
         FROM ga4_sessions
         GROUP BY date, campaign_id
     ) gs_name ON gs_name.campaign_id = fc.campaign_name AND gs_name.date = fc.date
-    {$where}
     GROUP BY fc.date
     ORDER BY fc.date
 ", $params);
@@ -298,7 +331,7 @@ foreach ($dailyRows as $row) {
 }
 ksort($weekdayRows);
 foreach ($weekdayRows as &$row) {
-    $row['connect_rate'] = tq_pct($row['ga4_sessions'], $row['clicks']);
+    $row['connect_rate'] = tq_connect_rate($row['ga4_sessions'], $row['clicks']);
     $row['roi'] = tq_num($row['spend']) > 0 ? ((tq_num($row['revenue']) - tq_num($row['spend'])) / tq_num($row['spend'])) * 100 : 0;
     $row['ecpm'] = tq_num($row['gam_impressions']) > 0 ? (tq_num($row['revenue']) / tq_num($row['gam_impressions'])) * 1000 : 0;
 }
@@ -342,7 +375,7 @@ usort($campaignRows, function($a, $b) use ($sort) {
 $qualityAvg = count($campaignRows) ? array_sum(array_column($campaignRows, 'score')) / count($campaignRows) : 0;
 $highRiskCount = count(array_filter($campaignRows, fn($r) => $r['risk'] === 'high'));
 $mediumRiskCount = count(array_filter($campaignRows, fn($r) => $r['risk'] === 'medium'));
-$connectRateTotal = tq_pct($totalSessions, $totalClicks);
+$connectRateTotal = tq_connect_rate($totalSessions, $totalClicks);
 $fillRateTotal = tq_pct($totalGamImpressions, $totalGamRequests);
 $roiTotal = $totalSpend > 0 ? (($totalRevenue - $totalSpend) / $totalSpend) * 100 : 0;
 
@@ -649,7 +682,7 @@ ob_start();
                     <td class="<?= $r['roi'] >= 0 ? 'positive' : 'negative' ?>"><?= formatNumber($r['roi'], 1) ?>%</td>
                     <td><?= formatNumber($r['clicks']) ?></td>
                     <td><?= $r['ga4_sessions'] > 0 ? formatNumber($r['ga4_sessions']) : '-' ?></td>
-                    <td class="<?= $r['connect_rate'] >= 70 ? 'positive' : ($r['connect_rate'] > 0 && $r['connect_rate'] < 50 ? 'negative' : '') ?>"><?= $r['connect_rate'] > 0 ? formatNumber($r['connect_rate'], 1) . '%' : '-' ?></td>
+                    <td class="<?= $r['connect_rate'] >= 70 ? 'positive' : ($r['connect_rate'] > 0 && $r['connect_rate'] < 50 ? 'negative' : '') ?>" title="<?= ($r['connect_rate_raw'] ?? 0) > 100 ? 'GA4 maior que cliques. Verifique UTMs/atribuição.' : '' ?>"><?= $r['connect_rate'] > 0 ? formatNumber($r['connect_rate'], 1) . '%' : '-' ?></td>
                     <td><?= $r['lp_rate'] > 0 ? formatNumber($r['lp_rate'], 1) . '%' : '-' ?></td>
                     <td><?= $r['ctr'] > 0 ? formatNumber($r['ctr'], 2) . '%' : '-' ?></td>
                     <td><?= $r['ecpm'] > 0 ? formatMoney($r['ecpm']) : '-' ?></td>
