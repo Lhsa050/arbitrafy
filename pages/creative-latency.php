@@ -545,7 +545,7 @@ ob_start();
     <?php endforeach; ?>
 </select>
 <button class="btn-export" onclick="exportTableToCSV('creativePartnerTable', 'auditoria_demand_partner_<?= $dateFrom ?>_<?= $dateTo ?>')">Exportar CSV</button>
-<button class="btn btn-primary btn-sm" id="btnSyncCreativeGam" onclick="syncCreatives()">Sync Criativos</button>
+<button class="btn btn-primary btn-sm js-sync-creatives" id="btnSyncCreativeGam" onclick="syncCreatives()">Sync Criativos</button>
 <?php $dateFilterExtra = ob_get_clean(); ?>
 <?php include __DIR__ . '/../includes/partials/date-filter-bar.php'; ?>
 
@@ -622,6 +622,7 @@ ob_start();
     <div class="table-header">
         <span class="table-title">Criativos Meta Ads</span>
         <span class="badge <?= $metaAdCount > 0 ? 'badge-blue' : 'badge-yellow' ?>"><?= $metaAdCount > 0 ? formatNumber($metaAdCount) . ' anuncios' : 'aguardando sync' ?></span>
+        <button class="btn btn-primary btn-sm js-sync-creatives" type="button" onclick="syncCreatives()">Sync Criativos</button>
     </div>
     <div class="table-scroll">
         <table id="metaCreativeTable" class="cl-table">
@@ -634,7 +635,12 @@ ob_start();
             </thead>
             <tbody>
             <?php if (empty($metaAdRows)): ?>
-                <tr><td colspan="15" class="empty-state" style="padding:32px;">Sem dados de criativos Meta Ads no periodo. Clique em Sync Criativos para importar anuncios do Facebook.</td></tr>
+                <tr>
+                    <td colspan="15" class="empty-state" style="padding:32px;">
+                        Sem dados de criativos Meta Ads no periodo. Precisa de conexao Facebook ativa, conta com permissoes de Ads e anuncios com impressao/gasto dentro do filtro.
+                        <br><br><button class="btn btn-primary btn-sm js-sync-creatives" type="button" onclick="syncCreatives()">Sincronizar agora</button>
+                    </td>
+                </tr>
             <?php else: foreach ($metaAdRows as $r):
                 $hasHighFlag = count(array_filter($r['flags'], fn($flag) => $flag['level'] === 'high')) > 0;
                 $rowClass = $hasHighFlag ? 'cl-risk-high' : (!empty($r['flags']) ? 'cl-risk-medium' : '');
@@ -848,12 +854,15 @@ async function fetchSyncJson(url, label) {
 }
 
 async function syncCreatives() {
-    const btn = document.getElementById('btnSyncCreativeGam');
-    const original = btn ? btn.textContent : '';
-    if (btn) {
-        btn.disabled = true;
-        btn.textContent = 'Meta Ads...';
-    }
+    const buttons = Array.from(document.querySelectorAll('.js-sync-creatives'));
+    const setButtons = (text, disabled) => {
+        buttons.forEach((btn) => {
+            if (!btn.dataset.originalText) btn.dataset.originalText = btn.textContent;
+            btn.disabled = disabled;
+            btn.textContent = text;
+        });
+    };
+    setButtons('Meta Ads...', true);
 
     try {
         const errors = [];
@@ -866,7 +875,7 @@ async function syncCreatives() {
             errors.push(e.message);
         }
 
-        if (btn) btn.textContent = 'GAM...';
+        setButtons('GAM...', true);
         try {
             gamJson = await fetchSyncJson('api/sync.php?action=sync_gam&skip_cross_ref=1&creative_audit=1', 'GAM');
         } catch (e) {
@@ -888,10 +897,10 @@ async function syncCreatives() {
         if (typeof showToast === 'function') showToast(e.message, 'error');
         alert(e.message);
     } finally {
-        if (btn) {
+        buttons.forEach((btn) => {
             btn.disabled = false;
-            btn.textContent = original || 'Sync Criativos';
-        }
+            btn.textContent = btn.dataset.originalText || 'Sync Criativos';
+        });
     }
 }
 
