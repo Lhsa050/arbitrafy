@@ -643,16 +643,137 @@ function doSyncFB()
         logSync('FB', 'WARNING', 'hourly_error', 'Erro no hourly sync: ' . $e->getMessage());
     }
 
+    // ====================================================
+    // Optional ad/creative sync for the Creative Latency tab
+    // Uses FB API level=ad without changing the normal campaign sync.
+    // ====================================================
+    $creativeAdCount = 0;
+    if (($_GET['creative_audit'] ?? '') === '1') {
+        try {
+            if (!function_exists('ensureFBAdsTable')) {
+                logSync('FB', 'WARNING', 'ad_sync', 'Funcao ensureFBAdsTable nao encontrada. Atualize o helpers.php.');
+                throw new Exception('ensureFBAdsTable nao disponivel');
+            }
+            ensureFBAdsTable();
+
+            foreach ($accounts as $account) {
+                $accountId = $account['id'];
+                $accountName = $account['name'];
+                $token = $account['token'] ?? $token;
+                if (strpos($accountId, 'act_') !== 0) {
+                    $accountId = 'act_' . $accountId;
+                }
+
+                $adFields = 'date_start,campaign_id,campaign_name,ad_id,ad_name,spend,impressions,inline_link_clicks,actions,conversions,cost_per_action_type,cost_per_conversion,cost_per_inline_link_click,inline_link_click_ctr';
+                $adUrl = "https://graph.facebook.com/{$version}/{$accountId}/insights?" . http_build_query([
+                    'level' => 'ad',
+                    'fields' => $adFields,
+                    'time_increment' => 1,
+                    'time_range' => json_encode(['since' => $since, 'until' => $until]),
+                    'limit' => 500,
+                    'access_token' => $token,
+                ]);
+
+                $adResult = curlGet($adUrl);
+                if (isset($adResult['error'])) {
+                    if (($adResult['error']['code'] ?? 0) == 190) {
+                        markFBSyncAccountExpired($account, $adResult['error']['message'] ?? '');
+                    }
+                    logSync('FB', 'WARNING', 'ad_api_full', $accountName . ': tentando sync de criativos sem conversoes - ' . ($adResult['error']['message'] ?? 'Erro no ad breakdown'));
+
+                    $leanAdFields = 'date_start,campaign_id,campaign_name,ad_id,ad_name,spend,impressions,inline_link_clicks,inline_link_click_ctr,cost_per_inline_link_click';
+                    $adUrl = "https://graph.facebook.com/{$version}/{$accountId}/insights?" . http_build_query([
+                        'level' => 'ad',
+                        'fields' => $leanAdFields,
+                        'time_increment' => 1,
+                        'time_range' => json_encode(['since' => $since, 'until' => $until]),
+                        'limit' => 500,
+                        'access_token' => $token,
+                    ]);
+                    $adResult = curlGet($adUrl);
+                }
+
+                if (isset($adResult['error'])) {
+                    if (($adResult['error']['code'] ?? 0) == 190) {
+                        markFBSyncAccountExpired($account, $adResult['error']['message'] ?? '');
+                    }
+                    logSync('FB', 'WARNING', 'ad_api', $accountName . ': ' . ($adResult['error']['message'] ?? 'Erro no ad breakdown'));
+                    continue;
+                }
+
+                $adAllData = $adResult['data'] ?? [];
+                while (isset($adResult['paging']['next'])) {
+                    $adResult = curlGet($adResult['paging']['next']);
+                    if (isset($adResult['data'])) {
+                        $adAllData = array_merge($adAllData, $adResult['data']);
+                    }
+                }
+
+                query("DELETE FROM fb_ads WHERE date BETWEEN ? AND ? AND account_name = ?", [$since, $until, $accountName]);
+
+                foreach ($adAllData as $adRow) {
+                    $adId = trim((string)($adRow['ad_id'] ?? ''));
+                    $campaignId = trim((string)($adRow['campaign_id'] ?? ''));
+                    if ($adId === '' || $campaignId === '') {
+                        continue;
+                    }
+
+                    $metrics = extractFBInsightResultMetrics($adRow);
+                    $spend = (float)($adRow['spend'] ?? 0);
+                    $impressions = (int)($adRow['impressions'] ?? 0);
+                    $clicks = (int)($adRow['inline_link_clicks'] ?? 0);
+                    $results = (int)($metrics['results'] ?? 0);
+
+                    if ($spend <= 0 && $impressions <= 0 && $clicks <= 0 && $results <= 0) {
+                        continue;
+                    }
+
+                    $cpc = (float)($adRow['cost_per_inline_link_click'] ?? 0);
+                    if ($cpc <= 0 && $clicks > 0) {
+                        $cpc = $spend / $clicks;
+                    }
+                    $ctr = (float)($adRow['inline_link_click_ctr'] ?? 0);
+                    if ($ctr <= 0 && $impressions > 0) {
+                        $ctr = ($clicks / $impressions) * 100;
+                    }
+                    $cpm = $impressions > 0 ? ($spend / $impressions) * 1000 : 0;
+
+                    upsert('fb_ads', [
+                        'date' => $adRow['date_start'],
+                        'account_name' => $accountName,
+                        'campaign_id' => $campaignId,
+                        'campaign_name' => $adRow['campaign_name'] ?? '',
+                        'ad_id' => $adId,
+                        'ad_name' => $adRow['ad_name'] ?? '',
+                        'spend' => $spend,
+                        'impressions' => $impressions,
+                        'clicks' => $clicks,
+                        'results' => $results,
+                        'cpc' => $cpc,
+                        'ctr' => $ctr,
+                        'cpm' => $cpm,
+                    ], ['date', 'account_name', 'ad_id']);
+                    $creativeAdCount++;
+                }
+            }
+            logSync('FB', 'INFO', 'ad_sync', "FB creative/ad sync: {$creativeAdCount} registros importados");
+        } catch (Exception $e) {
+            logSync('FB', 'WARNING', 'ad_error', 'Erro no creative/ad sync: ' . $e->getMessage());
+        }
+    }
+
     $durationMs = round((microtime(true) - $syncStart) * 1000);
     $fbSyncFailed = ($totalImported === 0 && $mainErrorCount >= count($accounts) && !empty($errors));
+    $creativeAdMsg = (($_GET['creative_audit'] ?? '') === '1') ? ", {$creativeAdCount} ads" : '';
 
     $response = [
         'success' => !$fbSyncFailed,
-        'message' => "FB sincronizado! {$totalImported} registros, {$placementCount} placements, {$deviceCount} devices, {$hourlyCount} horas.",
+        'message' => "FB sincronizado! {$totalImported} registros, {$placementCount} placements, {$deviceCount} devices, {$hourlyCount} horas{$creativeAdMsg}.",
         'imported' => $totalImported,
         'placements' => $placementCount,
         'devices' => $deviceCount,
         'hourly' => $hourlyCount,
+        'creative_ads' => $creativeAdCount,
     ];
     if ($fbSyncFailed) {
         $response['error'] = 'Facebook nao sincronizou. Reconecte o Facebook ou atualize o token manual.';
@@ -660,9 +781,9 @@ function doSyncFB()
     }
     if (!empty($errors)) {
         $response['warnings'] = $errors;
-        logSync('FB', 'WARNING', 'sync_complete', "FB sync com avisos: {$totalImported} registros, {$placementCount} placements, {$deviceCount} devices, {$hourlyCount} horas, " . count($errors) . " erros", implode("\n", $errors), null, $durationMs);
+        logSync('FB', 'WARNING', 'sync_complete', "FB sync com avisos: {$totalImported} registros, {$placementCount} placements, {$deviceCount} devices, {$hourlyCount} horas{$creativeAdMsg}, " . count($errors) . " erros", implode("\n", $errors), null, $durationMs);
     } else {
-        logSync('FB', 'INFO', 'sync_complete', "FB sync OK: {$totalImported} registros, {$placementCount} placements, {$deviceCount} devices, {$hourlyCount} horas", null, null, $durationMs);
+        logSync('FB', 'INFO', 'sync_complete', "FB sync OK: {$totalImported} registros, {$placementCount} placements, {$deviceCount} devices, {$hourlyCount} horas{$creativeAdMsg}", null, null, $durationMs);
     }
     echo json_encode($response);
     exit;

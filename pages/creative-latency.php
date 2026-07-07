@@ -10,6 +10,7 @@
 $cotacao = getCotacaoDolar();
 if (function_exists('ensureRevenueTableSchema')) ensureRevenueTableSchema();
 if (function_exists('ensurePlacementsTable')) ensurePlacementsTable();
+if (function_exists('ensureFBAdsTable')) ensureFBAdsTable();
 
 list($dateFrom, $dateTo, $datePreset) = resolveDateFilter();
 $sourceFilter = $_GET['source'] ?? '';
@@ -194,6 +195,34 @@ function cl_label($level) {
     return 'OK';
 }
 
+function cl_meta_ad_flags($row) {
+    $flags = [];
+    $impressions = cl_num($row['impressions'] ?? 0);
+    $clicks = cl_num($row['clicks'] ?? 0);
+    $spend = cl_num($row['spend'] ?? 0);
+    $revenue = cl_num($row['revenue_brl'] ?? 0);
+    $ctr = cl_num($row['ctr'] ?? 0);
+    $results = cl_num($row['results'] ?? 0);
+    $roi = $spend > 0 ? (($revenue - $spend) / $spend) * 100 : 0;
+
+    if ($impressions >= 1000 && $ctr >= 12) {
+        $flags[] = ['level' => 'high', 'label' => 'CTR anormal'];
+    } elseif ($impressions >= 1000 && $ctr >= 8) {
+        $flags[] = ['level' => 'medium', 'label' => 'CTR alto'];
+    }
+    if ($spend >= 30 && $clicks > 0 && $results <= 0) {
+        $flags[] = ['level' => 'medium', 'label' => 'Sem resultado'];
+    }
+    if ($revenue > 0 && $roi < -20) {
+        $flags[] = ['level' => 'medium', 'label' => 'ROI negativo'];
+    }
+    if ($impressions >= 500 && $clicks <= 0) {
+        $flags[] = ['level' => 'medium', 'label' => 'Sem clique'];
+    }
+
+    return $flags;
+}
+
 cl_ensure_table();
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'import_latency_csv') {
@@ -355,7 +384,79 @@ unset($row);
 usort($partnerRows, fn($a, $b) => ($b['risk_score'] <=> $a['risk_score']) ?: ((int)$b['impressions'] <=> (int)$a['impressions']));
 usort($creativeRows, fn($a, $b) => ($b['risk_score'] <=> $a['risk_score']) ?: ((int)$b['impressions'] <=> (int)$a['impressions']));
 
+$metaAdRows = [];
+if ($sourceFilter === '' || $sourceFilter === 'facebook_ads') {
+    try {
+        $cotacaoSql = (float)$cotacao;
+        $fbAdWhere = "WHERE fa.date BETWEEN ? AND ?";
+        $fbAdParams = [$dateFrom, $dateTo];
+        if ($search !== '') {
+            $fbAdWhere .= " AND (fa.ad_name LIKE ? OR fa.ad_id LIKE ? OR fa.campaign_name LIKE ? OR fa.campaign_id LIKE ? OR fa.account_name LIKE ?)";
+            $fbAdParams[] = "%{$search}%";
+            $fbAdParams[] = "%{$search}%";
+            $fbAdParams[] = "%{$search}%";
+            $fbAdParams[] = "%{$search}%";
+            $fbAdParams[] = "%{$search}%";
+        }
+
+        $metaAdRows = fetchAll("
+            SELECT fa.ad_id,
+                   COALESCE(MAX(NULLIF(fa.ad_name, '')), fa.ad_id) as ad_name,
+                   fa.campaign_id,
+                   COALESCE(MAX(NULLIF(fa.campaign_name, '')), fa.campaign_id) as campaign_name,
+                   COALESCE(MAX(NULLIF(fa.account_name, '')), '-') as account_name,
+                   SUM(fa.spend) as spend,
+                   SUM(fa.impressions) as impressions,
+                   SUM(fa.clicks) as clicks,
+                   SUM(fa.results) as results,
+                   CASE WHEN SUM(fa.clicks) > 0 THEN SUM(fa.spend) / SUM(fa.clicks) ELSE 0 END as cpc,
+                   CASE WHEN SUM(fa.impressions) > 0 THEN (SUM(fa.clicks) * 100.0) / SUM(fa.impressions) ELSE 0 END as ctr,
+                   CASE WHEN SUM(fa.impressions) > 0 THEN (SUM(fa.spend) * 1000.0) / SUM(fa.impressions) ELSE 0 END as cpm,
+                   COALESCE(SUM(CASE
+                       WHEN cs.campaign_spend > 0 THEN COALESCE(r.revenue_brl, 0) * fa.spend / cs.campaign_spend
+                       ELSE 0
+                   END), 0) as revenue_brl
+            FROM fb_ads fa
+            LEFT JOIN (
+                SELECT date, campaign_id, SUM(spend) as campaign_spend
+                FROM fb_ads
+                WHERE date BETWEEN ? AND ?
+                GROUP BY date, campaign_id
+            ) cs ON cs.date = fa.date AND cs.campaign_id = fa.campaign_id
+            LEFT JOIN (
+                SELECT date, campaign_id, SUM(receita_usd) * {$cotacaoSql} as revenue_brl
+                FROM revenue
+                WHERE date BETWEEN ? AND ?
+                GROUP BY date, campaign_id
+            ) r ON r.date = fa.date AND r.campaign_id = fa.campaign_id
+            {$fbAdWhere}
+            GROUP BY fa.ad_id, fa.campaign_id
+            ORDER BY spend DESC, impressions DESC
+            LIMIT 100
+        ", array_merge([$dateFrom, $dateTo, $dateFrom, $dateTo], $fbAdParams));
+    } catch (Exception $e) {
+        $metaAdRows = [];
+    }
+}
+
+foreach ($metaAdRows as &$row) {
+    $row['roi_pct'] = cl_num($row['spend']) > 0 ? ((cl_num($row['revenue_brl']) - cl_num($row['spend'])) / cl_num($row['spend'])) * 100 : 0;
+    $row['cpa'] = cl_num($row['results']) > 0 ? cl_num($row['spend']) / cl_num($row['results']) : 0;
+    $row['flags'] = cl_meta_ad_flags($row);
+}
+unset($row);
+
 $sourceRows = fetchAll("SELECT DISTINCT source FROM creative_latency_audit WHERE source != '' ORDER BY source");
+$hasFBAdsRows = 0;
+try {
+    $hasFBAdsRows = (int)(fetchOne("SELECT COUNT(*) as c FROM fb_ads")['c'] ?? 0);
+} catch (Exception $e) {
+    $hasFBAdsRows = 0;
+}
+if ($hasFBAdsRows > 0) {
+    $sourceRows[] = ['source' => 'facebook_ads'];
+}
+usort($sourceRows, fn($a, $b) => strcmp($a['source'], $b['source']));
 
 $siteRows = [];
 try {
@@ -420,6 +521,10 @@ $highRiskPartners = count(array_filter($partnerRows, fn($r) => $r['risk_level'] 
 $highRiskCreatives = count(array_filter($creativeRows, fn($r) => $r['risk_level'] === 'high'));
 $manualImpressions = array_sum(array_map(fn($r) => cl_num($r['impressions']), $partnerRows));
 $manualRevenue = array_sum(array_map(fn($r) => cl_num($r['revenue_usd']), $partnerRows));
+$metaAdCount = count($metaAdRows);
+$metaAdSpend = array_sum(array_map(fn($r) => cl_num($r['spend']), $metaAdRows));
+$metaAdRevenue = array_sum(array_map(fn($r) => cl_num($r['revenue_brl']), $metaAdRows));
+$metaAdAlerts = array_sum(array_map(fn($r) => count($r['flags'] ?? []), $metaAdRows));
 
 function cl_url_params($overrides = []) {
     $params = array_merge($_GET, ['page' => 'creative-latency'], $overrides);
@@ -440,7 +545,7 @@ ob_start();
     <?php endforeach; ?>
 </select>
 <button class="btn-export" onclick="exportTableToCSV('creativePartnerTable', 'auditoria_demand_partner_<?= $dateFrom ?>_<?= $dateTo ?>')">Exportar CSV</button>
-<button class="btn btn-primary btn-sm" id="btnSyncCreativeGam" onclick="syncCreativeGAM()">Sync GAM</button>
+<button class="btn btn-primary btn-sm" id="btnSyncCreativeGam" onclick="syncCreatives()">Sync Criativos</button>
 <?php $dateFilterExtra = ob_get_clean(); ?>
 <?php include __DIR__ . '/../includes/partials/date-filter-bar.php'; ?>
 
@@ -463,6 +568,11 @@ ob_start();
         <div class="card-label">Criativos com risco alto</div>
         <div class="card-value"><?= formatNumber($highRiskCreatives) ?></div>
         <div class="card-change"><?= count($creativeRows) ?> criativos filtrados</div>
+    </div>
+    <div class="card <?= $metaAdAlerts > 0 ? 'card-yellow' : 'card-blue' ?>">
+        <div class="card-label">Criativos Meta Ads</div>
+        <div class="card-value"><?= formatNumber($metaAdCount) ?></div>
+        <div class="card-change"><?= formatMoney($metaAdSpend) ?> investidos</div>
     </div>
     <div class="card card-blue">
         <div class="card-label">Impressoes importadas</div>
@@ -500,10 +610,68 @@ ob_start();
                     <tr><td>Fill rate GAM</td><td><?= cl_num($programmatic['ad_requests'] ?? 0) > 0 ? formatNumber(cl_rate($programmatic['impressions'], $programmatic['ad_requests']), 1) . '%' : '-' ?></td><td>Proxy de request/render vazio</td></tr>
                     <tr><td>Active View</td><td><?= cl_num($programmatic['active_view_pct'] ?? 0) > 0 ? formatPercentRaw(cl_num($programmatic['active_view_pct']) * 100) : '-' ?></td><td>Proxy de viewability</td></tr>
                     <tr><td>Match rate</td><td><?= cl_num($programmatic['match_rate'] ?? 0) > 0 ? formatPercentRaw(cl_num($programmatic['match_rate']) * 100) : '-' ?></td><td>Risco de demanda fraca</td></tr>
+                    <tr><td>Criativos Meta Ads</td><td><?= $metaAdCount > 0 ? formatNumber($metaAdCount) . ' anuncios' : '-' ?></td><td>Performance por criativo/anuncio do Facebook</td></tr>
                     <tr><td>Latencia real por criativo</td><td><?= $totalImportedRows > 0 ? formatNumber($totalImportedRows) . ' linhas' : '-' ?></td><td>GAM Ad Speed quando habilitado, CSV/Spun como complemento</td></tr>
                 </tbody>
             </table>
         </div>
+    </div>
+</div>
+
+<div class="table-container">
+    <div class="table-header">
+        <span class="table-title">Criativos Meta Ads</span>
+        <span class="badge <?= $metaAdCount > 0 ? 'badge-blue' : 'badge-yellow' ?>"><?= $metaAdCount > 0 ? formatNumber($metaAdCount) . ' anuncios' : 'aguardando sync' ?></span>
+    </div>
+    <div class="table-scroll">
+        <table id="metaCreativeTable" class="cl-table">
+            <thead>
+                <tr>
+                    <th>ID</th><th>Criativo/anuncio</th><th>Campanha</th><th>Conta</th>
+                    <th>Invest.</th><th>Receita atrib.</th><th>ROI</th><th>Imp.</th><th>Cliques</th>
+                    <th>CTR</th><th>CPC</th><th>CPM</th><th>Resultados</th><th>CPA</th><th>Alertas</th>
+                </tr>
+            </thead>
+            <tbody>
+            <?php if (empty($metaAdRows)): ?>
+                <tr><td colspan="15" class="empty-state" style="padding:32px;">Sem dados de criativos Meta Ads no periodo. Clique em Sync Criativos para importar anuncios do Facebook.</td></tr>
+            <?php else: foreach ($metaAdRows as $r):
+                $hasHighFlag = count(array_filter($r['flags'], fn($flag) => $flag['level'] === 'high')) > 0;
+                $rowClass = $hasHighFlag ? 'cl-risk-high' : (!empty($r['flags']) ? 'cl-risk-medium' : '');
+                $hasRevenue = cl_num($r['revenue_brl']) > 0;
+            ?>
+                <tr class="<?= sanitize($rowClass) ?>">
+                    <td>
+                        <button type="button" class="cl-copy-btn" data-copy="<?= sanitize($r['ad_id']) ?>" onclick="copyCreativeId(this.dataset.copy)" title="Copiar ID">Copiar</button>
+                        <span class="cl-id"><?= sanitize($r['ad_id']) ?></span>
+                    </td>
+                    <td title="<?= sanitize($r['ad_name']) ?>"><?= sanitize($r['ad_name'] ?: 'Sem nome') ?></td>
+                    <td title="<?= sanitize($r['campaign_name']) ?>"><?= sanitize($r['campaign_name'] ?: $r['campaign_id']) ?></td>
+                    <td><?= sanitize($r['account_name'] ?: '-') ?></td>
+                    <td><?= formatMoney($r['spend']) ?></td>
+                    <td><?= $hasRevenue ? formatMoney($r['revenue_brl']) : '-' ?></td>
+                    <td class="<?= $hasRevenue ? roiClass($r['roi_pct']) : '' ?>"><?= $hasRevenue ? formatPercentRaw($r['roi_pct']) : '-' ?></td>
+                    <td><?= formatNumber($r['impressions']) ?></td>
+                    <td><?= formatNumber($r['clicks']) ?></td>
+                    <td><?= cl_num($r['ctr']) > 0 ? formatPercentRaw($r['ctr']) : '-' ?></td>
+                    <td><?= cl_num($r['cpc']) > 0 ? formatMoney($r['cpc']) : '-' ?></td>
+                    <td><?= cl_num($r['cpm']) > 0 ? formatMoney($r['cpm']) : '-' ?></td>
+                    <td><?= formatNumber($r['results']) ?></td>
+                    <td><?= cl_num($r['cpa']) > 0 ? formatMoney($r['cpa']) : '-' ?></td>
+                    <td>
+                        <?php if (empty($r['flags'])): ?>
+                            <span class="badge badge-green">OK</span>
+                        <?php else: foreach (array_slice($r['flags'], 0, 3) as $flag): ?>
+                            <span class="cl-flag cl-flag-<?= sanitize($flag['level']) ?>"><?= sanitize($flag['label']) ?></span>
+                        <?php endforeach; endif; ?>
+                    </td>
+                </tr>
+            <?php endforeach; endif; ?>
+            </tbody>
+        </table>
+    </div>
+    <div class="cl-help">
+        Receita atribuida = receita da campanha/dia distribuida proporcionalmente pelo investimento de cada anuncio. Peso real em KB e latencia real ainda dependem do GAM Ad Speed, Spun ou CSV externo.
     </div>
 </div>
 
@@ -523,7 +691,7 @@ ob_start();
             </thead>
             <tbody>
             <?php if (empty($partnerRows)): ?>
-                <tr><td colspan="19" class="empty-state" style="padding:38px;">Ainda nao ha dados por anunciante/demand partner. Sincronize o GAM ou importe um CSV exportado do GAM, Spun, AdX ou monitoramento leve.</td></tr>
+                <tr><td colspan="19" class="empty-state" style="padding:38px;">Ainda nao ha dados por anunciante/demand partner. Use Sync Criativos para tentar o GAM ou importe um CSV exportado do GAM, Spun, AdX ou monitoramento leve.</td></tr>
             <?php else: foreach ($partnerRows as $r): ?>
                 <tr class="cl-risk-<?= sanitize($r['risk_level']) ?>">
                     <td><span class="badge <?= cl_badge($r['risk_level']) ?>"><?= cl_label($r['risk_level']) ?></span></td>
@@ -665,26 +833,56 @@ ob_start();
 </div>
 
 <script>
-async function syncCreativeGAM() {
+async function fetchSyncJson(url, label) {
+    const res = await fetch(url, { cache: 'no-store' });
+    let json;
+    try {
+        json = await res.json();
+    } catch (e) {
+        throw new Error(`${label}: resposta invalida do servidor`);
+    }
+    if (!json.success) {
+        throw new Error(json.error || json.message || `${label}: falha na sincronizacao`);
+    }
+    return json;
+}
+
+async function syncCreatives() {
     const btn = document.getElementById('btnSyncCreativeGam');
     const original = btn ? btn.textContent : '';
     if (btn) {
         btn.disabled = true;
-        btn.textContent = 'Sincronizando...';
+        btn.textContent = 'Meta Ads...';
     }
 
     try {
-        const res = await fetch('api/sync.php?action=sync_gam&skip_cross_ref=1&creative_audit=1', { cache: 'no-store' });
-        const json = await res.json();
-        if (!json.success) {
-            throw new Error(json.error || 'Falha ao sincronizar GAM');
+        const errors = [];
+        let fbJson = {};
+        let gamJson = {};
+
+        try {
+            fbJson = await fetchSyncJson('api/sync.php?action=sync_fb&skip_cross_ref=1&creative_audit=1', 'Meta Ads');
+        } catch (e) {
+            errors.push(e.message);
         }
 
-        const imported = json.creative_latency_imported ?? 0;
-        const msg = imported > 0
-            ? `GAM sincronizado. Auditoria recebeu ${imported} linhas.`
-            : 'GAM sincronizado, mas nenhum dado novo de criativo/latencia foi retornado.';
-        if (typeof showToast === 'function') showToast(msg, imported > 0 ? 'success' : 'warning');
+        if (btn) btn.textContent = 'GAM...';
+        try {
+            gamJson = await fetchSyncJson('api/sync.php?action=sync_gam&skip_cross_ref=1&creative_audit=1', 'GAM');
+        } catch (e) {
+            errors.push(e.message);
+        }
+
+        const ads = fbJson.creative_ads ?? 0;
+        const imported = gamJson.creative_latency_imported ?? 0;
+        if (errors.length && ads <= 0 && imported <= 0) {
+            throw new Error(errors.join(' | '));
+        }
+
+        const msg = `Meta Ads: ${ads} anuncios. GAM/latencia: ${imported} linhas.`;
+        const type = errors.length ? 'warning' : ((ads > 0 || imported > 0) ? 'success' : 'warning');
+        const fullMsg = errors.length ? `${msg} Avisos: ${errors.join(' | ')}` : msg;
+        if (typeof showToast === 'function') showToast(fullMsg, type);
         setTimeout(() => window.location.reload(), 900);
     } catch (e) {
         if (typeof showToast === 'function') showToast(e.message, 'error');
@@ -692,9 +890,27 @@ async function syncCreativeGAM() {
     } finally {
         if (btn) {
             btn.disabled = false;
-            btn.textContent = original || 'Sync GAM';
+            btn.textContent = original || 'Sync Criativos';
         }
     }
+}
+
+async function copyCreativeId(id) {
+    if (!id) return;
+    try {
+        await navigator.clipboard.writeText(id);
+    } catch (e) {
+        const input = document.createElement('textarea');
+        input.value = id;
+        input.style.position = 'fixed';
+        input.style.left = '-9999px';
+        document.body.appendChild(input);
+        input.focus();
+        input.select();
+        document.execCommand('copy');
+        input.remove();
+    }
+    if (typeof showToast === 'function') showToast('ID do criativo copiado.', 'success');
 }
 </script>
 
@@ -775,6 +991,28 @@ async function syncCreativeGAM() {
 .cl-flag-high { color: #ffd7d4; background: rgba(255, 69, 58, 0.18); border: 1px solid rgba(255, 69, 58, 0.28); }
 .cl-flag-medium { color: #ffe89a; background: rgba(255, 214, 10, 0.14); border: 1px solid rgba(255, 214, 10, 0.24); }
 .cl-flag-info { color: #cce8ff; background: rgba(100, 210, 255, 0.12); border: 1px solid rgba(100, 210, 255, 0.22); }
+.cl-copy-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 24px;
+    padding: 0 8px;
+    margin-right: 7px;
+    border-radius: 6px;
+    border: 1px solid rgba(10, 132, 255, 0.4);
+    background: rgba(10, 132, 255, 0.14);
+    color: #9fd0ff;
+    font-size: 10px;
+    font-weight: 800;
+    cursor: pointer;
+}
+.cl-id {
+    display: inline-block;
+    max-width: 96px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: middle;
+}
 @media (max-width: 980px) {
     .cl-grid-2 { grid-template-columns: 1fr; }
 }

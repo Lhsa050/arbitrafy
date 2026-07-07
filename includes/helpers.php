@@ -1019,6 +1019,59 @@ function ensureFBPlacementsTable() {
 }
 
 /**
+ * Ensure fb_ads table exists (Facebook ad/creative performance)
+ */
+function ensureFBAdsTable() {
+    static $created = false;
+    if ($created) return;
+
+    try {
+        if (defined('DB_TYPE') && DB_TYPE === 'mysql') {
+            getDB()->exec("CREATE TABLE IF NOT EXISTS fb_ads (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                date DATE NOT NULL,
+                account_name VARCHAR(100) DEFAULT '',
+                campaign_id VARCHAR(50) NOT NULL,
+                campaign_name VARCHAR(255) DEFAULT '',
+                ad_id VARCHAR(80) NOT NULL DEFAULT '',
+                ad_name VARCHAR(255) DEFAULT '',
+                spend DECIMAL(12,2) DEFAULT 0,
+                impressions INT DEFAULT 0,
+                clicks INT DEFAULT 0,
+                results INT DEFAULT 0,
+                cpc DECIMAL(10,6) DEFAULT 0,
+                ctr DECIMAL(10,6) DEFAULT 0,
+                cpm DECIMAL(10,6) DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY unique_fb_ad (date, account_name, ad_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        } else {
+            getDB()->exec("CREATE TABLE IF NOT EXISTS fb_ads (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date DATE NOT NULL,
+                account_name VARCHAR(100) DEFAULT '',
+                campaign_id VARCHAR(50) NOT NULL,
+                campaign_name VARCHAR(255) DEFAULT '',
+                ad_id VARCHAR(80) NOT NULL DEFAULT '',
+                ad_name VARCHAR(255) DEFAULT '',
+                spend DECIMAL(12,2) DEFAULT 0,
+                impressions INTEGER DEFAULT 0,
+                clicks INTEGER DEFAULT 0,
+                results INTEGER DEFAULT 0,
+                cpc DECIMAL(10,6) DEFAULT 0,
+                ctr DECIMAL(10,6) DEFAULT 0,
+                cpm DECIMAL(10,6) DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(date, account_name, ad_id)
+            )");
+        }
+        $created = true;
+    } catch (Exception $e) {
+        // Silently fail
+    }
+}
+
+/**
  * Ensure fb_devices table exists (actual FB spend per device OS)
  */
 function ensureFBDevicesTable() {
