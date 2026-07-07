@@ -770,6 +770,452 @@ function getGAMSyncAuth()
     }
 }
 
+function gamReportXml($apiVersion, $networkCode, array $dimensions, array $columns, $since, $until)
+{
+    $sinceY = date('Y', strtotime($since));
+    $sinceM = date('n', strtotime($since));
+    $sinceD = date('j', strtotime($since));
+    $untilY = date('Y', strtotime($until));
+    $untilM = date('n', strtotime($until));
+    $untilD = date('j', strtotime($until));
+
+    $dimensionXml = implode("\n", array_map(fn($d) => "          <ns:dimensions>{$d}</ns:dimensions>", $dimensions));
+    $columnXml = implode("\n", array_map(fn($c) => "          <ns:columns>{$c}</ns:columns>", $columns));
+
+    return <<<XML
+<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+    xmlns:ns="https://www.google.com/apis/ads/publisher/{$apiVersion}">
+  <soapenv:Header>
+    <ns:RequestHeader>
+      <ns:networkCode>{$networkCode}</ns:networkCode>
+      <ns:applicationName>BussolaDoTrafego</ns:applicationName>
+    </ns:RequestHeader>
+  </soapenv:Header>
+  <soapenv:Body>
+    <ns:runReportJob>
+      <ns:reportJob>
+        <ns:reportQuery>
+{$dimensionXml}
+{$columnXml}
+          <ns:startDate>
+            <ns:year>{$sinceY}</ns:year>
+            <ns:month>{$sinceM}</ns:month>
+            <ns:day>{$sinceD}</ns:day>
+          </ns:startDate>
+          <ns:endDate>
+            <ns:year>{$untilY}</ns:year>
+            <ns:month>{$untilM}</ns:month>
+            <ns:day>{$untilD}</ns:day>
+          </ns:endDate>
+          <ns:dateRangeType>CUSTOM_DATE</ns:dateRangeType>
+        </ns:reportQuery>
+      </ns:reportJob>
+    </ns:runReportJob>
+  </soapenv:Body>
+</soapenv:Envelope>
+XML;
+}
+
+function gamNormHeader($header)
+{
+    return trim(strtolower(preg_replace('/[^a-z0-9]+/i', '_', (string)$header)), '_');
+}
+
+function gamHeaderIndex(array $headers, array $patterns)
+{
+    $normalized = array_map('gamNormHeader', $headers);
+    $patterns = array_map('gamNormHeader', $patterns);
+
+    foreach ($patterns as $pattern) {
+        foreach ($normalized as $idx => $header) {
+            if ($header === $pattern) {
+                return $idx;
+            }
+        }
+    }
+
+    foreach ($patterns as $pattern) {
+        foreach ($normalized as $idx => $header) {
+            if ($pattern !== '' && strpos($header, $pattern) !== false) {
+                return $idx;
+            }
+        }
+    }
+
+    return null;
+}
+
+function gamNum($value)
+{
+    if ($value === null || $value === '') return 0.0;
+    $value = trim((string)$value);
+    $value = str_replace(['R$', '$', 'USD', 'BRL', ' ', '%'], '', $value);
+    if (strpos($value, ',') !== false && strpos($value, '.') !== false) {
+        $value = str_replace('.', '', $value);
+        $value = str_replace(',', '.', $value);
+    } elseif (strpos($value, ',') !== false) {
+        $value = str_replace(',', '.', $value);
+    }
+    return is_numeric($value) ? (float)$value : 0.0;
+}
+
+function gamPercent($value)
+{
+    $raw = trim((string)$value);
+    $num = gamNum($raw);
+    if ($num > 0 && $num <= 1 && strpos($raw, '%') === false) {
+        return $num * 100;
+    }
+    return $num;
+}
+
+function gamMoneyMicros($value)
+{
+    return gamNum($value) / 1000000;
+}
+
+function gamCsv($csv)
+{
+    $lines = explode("\n", trim((string)$csv));
+    if (empty($lines) || trim($lines[0]) === '') {
+        return [[], []];
+    }
+
+    $headers = str_getcsv($lines[0], ',', '"', '');
+    $rows = [];
+    for ($i = 1; $i < count($lines); $i++) {
+        $line = trim($lines[$i]);
+        if ($line === '' || stripos($line, 'total') === 0) {
+            continue;
+        }
+        $rows[] = str_getcsv($line, ',', '"', '');
+    }
+
+    return [$headers, $rows];
+}
+
+function gamCol(array $cols, $idx, $default = '')
+{
+    if ($idx === null) return $default;
+    return $cols[$idx] ?? $default;
+}
+
+function gamLoadBucketStats(array $buckets)
+{
+    $ordered = [
+        ['pct' => gamPercent($buckets['0_500'] ?? 0), 'mid' => 250, 'p95' => 500],
+        ['pct' => gamPercent($buckets['500_1000'] ?? 0), 'mid' => 750, 'p95' => 1000],
+        ['pct' => gamPercent($buckets['1_2'] ?? 0), 'mid' => 1500, 'p95' => 2000],
+        ['pct' => gamPercent($buckets['2_4'] ?? 0), 'mid' => 3000, 'p95' => 4000],
+        ['pct' => gamPercent($buckets['4_8'] ?? 0), 'mid' => 6000, 'p95' => 8000],
+        ['pct' => gamPercent($buckets['8_plus'] ?? 0), 'mid' => 9000, 'p95' => 9000],
+    ];
+
+    $totalPct = array_sum(array_column($ordered, 'pct'));
+    if ($totalPct <= 0) {
+        return ['avg_ms' => 0, 'p95_ms' => 0, 'slow_pct' => 0, 'very_slow_pct' => 0];
+    }
+
+    $weighted = 0;
+    $threshold = $totalPct * 0.95;
+    $running = 0;
+    $p95 = 0;
+    foreach ($ordered as $bucket) {
+        $weighted += $bucket['pct'] * $bucket['mid'];
+        $running += $bucket['pct'];
+        if ($p95 === 0 && $running >= $threshold) {
+            $p95 = $bucket['p95'];
+        }
+    }
+
+    $slow = $ordered[3]['pct'] + $ordered[4]['pct'] + $ordered[5]['pct'];
+    $verySlow = $ordered[4]['pct'] + $ordered[5]['pct'];
+
+    return [
+        'avg_ms' => round($weighted / $totalPct, 2),
+        'p95_ms' => $p95,
+        'slow_pct' => round($slow, 4),
+        'very_slow_pct' => round($verySlow, 4),
+    ];
+}
+
+function syncGAMCreativeLatencyReports($soapUrl, $token, $networkCode, $apiVersion, $since, $until)
+{
+    $result = [
+        'creative' => 0,
+        'ad_speed' => 0,
+        'yield_partner' => 0,
+        'errors' => [],
+    ];
+
+    if (!function_exists('ensureCreativeLatencyAuditTable')) {
+        return $result;
+    }
+
+    ensureCreativeLatencyAuditTable();
+    query("DELETE FROM creative_latency_audit WHERE date >= ? AND source IN ('gam_creative', 'gam_yield_partner')", [$since]);
+
+    try {
+        $reportXml = gamReportXml($apiVersion, $networkCode, [
+            'DATE',
+            'ADVERTISER_NAME',
+            'CREATIVE_ID',
+            'CREATIVE_NAME',
+            'CREATIVE_SIZE',
+        ], [
+            'TOTAL_LINE_ITEM_LEVEL_IMPRESSIONS',
+            'TOTAL_LINE_ITEM_LEVEL_CLICKS',
+            'TOTAL_LINE_ITEM_LEVEL_CTR',
+            'TOTAL_LINE_ITEM_LEVEL_ALL_REVENUE',
+            'TOTAL_AD_REQUESTS',
+            'TOTAL_RESPONSES_SERVED',
+            'TOTAL_UNMATCHED_AD_REQUESTS',
+            'TOTAL_ACTIVE_VIEW_VIEWABLE_IMPRESSIONS_RATE',
+        ], $since, $until);
+
+        $csv = runGAMReport($soapUrl, $reportXml, $token, $networkCode, $apiVersion, 'creative_historical');
+        if ($csv) {
+            [$headers, $rows] = gamCsv($csv);
+            $col = [
+                'date' => gamHeaderIndex($headers, ['DATE']),
+                'advertiser' => gamHeaderIndex($headers, ['ADVERTISER_NAME']),
+                'creative_id' => gamHeaderIndex($headers, ['CREATIVE_ID']),
+                'creative_name' => gamHeaderIndex($headers, ['CREATIVE_NAME']),
+                'creative_size' => gamHeaderIndex($headers, ['CREATIVE_SIZE']),
+                'impressions' => gamHeaderIndex($headers, ['TOTAL_LINE_ITEM_LEVEL_IMPRESSIONS']),
+                'clicks' => gamHeaderIndex($headers, ['TOTAL_LINE_ITEM_LEVEL_CLICKS']),
+                'ctr' => gamHeaderIndex($headers, ['TOTAL_LINE_ITEM_LEVEL_CTR']),
+                'revenue' => gamHeaderIndex($headers, ['TOTAL_LINE_ITEM_LEVEL_ALL_REVENUE']),
+                'requests' => gamHeaderIndex($headers, ['TOTAL_AD_REQUESTS']),
+                'rendered' => gamHeaderIndex($headers, ['TOTAL_RESPONSES_SERVED']),
+                'empty' => gamHeaderIndex($headers, ['TOTAL_UNMATCHED_AD_REQUESTS']),
+                'viewability' => gamHeaderIndex($headers, ['TOTAL_ACTIVE_VIEW_VIEWABLE_IMPRESSIONS_RATE']),
+            ];
+
+            foreach ($rows as $cols) {
+                $date = gamCol($cols, $col['date']);
+                if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) continue;
+
+                $impressions = (int)gamNum(gamCol($cols, $col['impressions'], 0));
+                $requests = (int)gamNum(gamCol($cols, $col['requests'], 0));
+                $rendered = (int)gamNum(gamCol($cols, $col['rendered'], 0));
+                $empty = (int)gamNum(gamCol($cols, $col['empty'], 0));
+                $clicks = (int)gamNum(gamCol($cols, $col['clicks'], 0));
+                $ctr = gamPercent(gamCol($cols, $col['ctr'], 0));
+                if ($ctr <= 0 && $impressions > 0 && $clicks > 0) {
+                    $ctr = ($clicks / $impressions) * 100;
+                }
+
+                if ($impressions <= 0 && $requests <= 0 && $rendered <= 0) continue;
+
+                insert('creative_latency_audit', [
+                    'date' => $date,
+                    'advertiser' => trim(gamCol($cols, $col['advertiser'], '')),
+                    'demand_partner' => '',
+                    'creative_id' => trim(gamCol($cols, $col['creative_id'], '')),
+                    'creative_name' => trim(gamCol($cols, $col['creative_name'], '')),
+                    'creative_dimensions' => trim(gamCol($cols, $col['creative_size'], '')),
+                    'source' => 'gam_creative',
+                    'impressions' => $impressions,
+                    'ad_requests' => $requests,
+                    'rendered' => $rendered,
+                    'empty_count' => $empty,
+                    'heavy_events' => 0,
+                    'avg_render_ms' => 0,
+                    'p95_render_ms' => 0,
+                    'avg_load_ms' => 0,
+                    'p95_load_ms' => 0,
+                    'creative_size_kb' => 0,
+                    'slow_load_pct' => 0,
+                    'very_slow_load_pct' => 0,
+                    'unviewed_before_loaded_pct' => 0,
+                    'viewability_pct' => gamPercent(gamCol($cols, $col['viewability'], 0)),
+                    'ctr' => $ctr,
+                    'revenue_usd' => gamMoneyMicros(gamCol($cols, $col['revenue'], 0)),
+                    'notes' => 'GAM historical creative report',
+                ]);
+                $result['creative']++;
+            }
+            logSync('GAM', 'INFO', 'creative_historical_complete', "Creative historical: {$result['creative']} registros importados");
+        } else {
+            $result['errors'][] = 'creative_historical retornou vazio';
+        }
+    } catch (Exception $e) {
+        $result['errors'][] = 'creative_historical: ' . $e->getMessage();
+        logSync('GAM', 'WARNING', 'creative_historical_error', $e->getMessage());
+    }
+
+    try {
+        $reportXml = gamReportXml($apiVersion, $networkCode, [
+            'DATE',
+            'ADVERTISER_NAME',
+            'CREATIVE_ID',
+            'CREATIVE_NAME',
+            'CREATIVE_SIZE_DELIVERED',
+        ], [
+            'CREATIVE_LOAD_TIME_0_500_MS_PERCENT',
+            'CREATIVE_LOAD_TIME_500_1000_MS_PERCENT',
+            'CREATIVE_LOAD_TIME_1_2_S_PERCENT',
+            'CREATIVE_LOAD_TIME_2_4_S_PERCENT',
+            'CREATIVE_LOAD_TIME_4_8_S_PERCENT',
+            'CREATIVE_LOAD_TIME_GREATER_THAN_8_S_PERCENT',
+            'UNVIEWED_REASON_USER_SCROLLED_BEFORE_AD_LOADED_PERCENT',
+        ], $since, $until);
+
+        $csv = runGAMReport($soapUrl, $reportXml, $token, $networkCode, $apiVersion, 'creative_ad_speed');
+        if ($csv) {
+            [$headers, $rows] = gamCsv($csv);
+            $col = [
+                'date' => gamHeaderIndex($headers, ['DATE']),
+                'advertiser' => gamHeaderIndex($headers, ['ADVERTISER_NAME']),
+                'creative_id' => gamHeaderIndex($headers, ['CREATIVE_ID']),
+                'creative_name' => gamHeaderIndex($headers, ['CREATIVE_NAME']),
+                'creative_size' => gamHeaderIndex($headers, ['CREATIVE_SIZE_DELIVERED']),
+                'b0' => gamHeaderIndex($headers, ['CREATIVE_LOAD_TIME_0_500_MS_PERCENT']),
+                'b1' => gamHeaderIndex($headers, ['CREATIVE_LOAD_TIME_500_1000_MS_PERCENT']),
+                'b2' => gamHeaderIndex($headers, ['CREATIVE_LOAD_TIME_1_2_S_PERCENT']),
+                'b3' => gamHeaderIndex($headers, ['CREATIVE_LOAD_TIME_2_4_S_PERCENT']),
+                'b4' => gamHeaderIndex($headers, ['CREATIVE_LOAD_TIME_4_8_S_PERCENT']),
+                'b5' => gamHeaderIndex($headers, ['CREATIVE_LOAD_TIME_GREATER_THAN_8_S_PERCENT']),
+                'unviewed' => gamHeaderIndex($headers, ['UNVIEWED_REASON_USER_SCROLLED_BEFORE_AD_LOADED_PERCENT']),
+            ];
+
+            foreach ($rows as $cols) {
+                $date = gamCol($cols, $col['date']);
+                if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) continue;
+
+                $stats = gamLoadBucketStats([
+                    '0_500' => gamCol($cols, $col['b0'], 0),
+                    '500_1000' => gamCol($cols, $col['b1'], 0),
+                    '1_2' => gamCol($cols, $col['b2'], 0),
+                    '2_4' => gamCol($cols, $col['b3'], 0),
+                    '4_8' => gamCol($cols, $col['b4'], 0),
+                    '8_plus' => gamCol($cols, $col['b5'], 0),
+                ]);
+
+                if ($stats['avg_ms'] <= 0 && $stats['slow_pct'] <= 0) continue;
+
+                insert('creative_latency_audit', [
+                    'date' => $date,
+                    'advertiser' => trim(gamCol($cols, $col['advertiser'], '')),
+                    'demand_partner' => '',
+                    'creative_id' => trim(gamCol($cols, $col['creative_id'], '')),
+                    'creative_name' => trim(gamCol($cols, $col['creative_name'], '')),
+                    'creative_dimensions' => trim(gamCol($cols, $col['creative_size'], '')),
+                    'source' => 'gam_creative',
+                    'impressions' => 0,
+                    'ad_requests' => 0,
+                    'rendered' => 0,
+                    'empty_count' => 0,
+                    'heavy_events' => 0,
+                    'avg_render_ms' => 0,
+                    'p95_render_ms' => 0,
+                    'avg_load_ms' => $stats['avg_ms'],
+                    'p95_load_ms' => $stats['p95_ms'],
+                    'creative_size_kb' => 0,
+                    'slow_load_pct' => $stats['slow_pct'],
+                    'very_slow_load_pct' => $stats['very_slow_pct'],
+                    'unviewed_before_loaded_pct' => gamPercent(gamCol($cols, $col['unviewed'], 0)),
+                    'viewability_pct' => 0,
+                    'ctr' => 0,
+                    'revenue_usd' => 0,
+                    'notes' => 'GAM ad speed creative load buckets',
+                ]);
+                $result['ad_speed']++;
+            }
+            logSync('GAM', 'INFO', 'creative_ad_speed_complete', "Creative ad speed: {$result['ad_speed']} registros importados");
+        } else {
+            $result['errors'][] = 'creative_ad_speed retornou vazio';
+        }
+    } catch (Exception $e) {
+        $result['errors'][] = 'creative_ad_speed: ' . $e->getMessage();
+        logSync('GAM', 'WARNING', 'creative_ad_speed_error', $e->getMessage());
+    }
+
+    try {
+        $reportXml = gamReportXml($apiVersion, $networkCode, [
+            'DATE',
+            'CLASSIFIED_YIELD_PARTNER_NAME',
+        ], [
+            'YIELD_GROUP_CALLOUTS',
+            'YIELD_GROUP_SUCCESSFUL_RESPONSES',
+            'YIELD_GROUP_BIDS',
+            'YIELD_GROUP_AUCTIONS_WON',
+            'YIELD_GROUP_IMPRESSIONS',
+            'YIELD_GROUP_ESTIMATED_REVENUE',
+        ], $since, $until);
+
+        $csv = runGAMReport($soapUrl, $reportXml, $token, $networkCode, $apiVersion, 'creative_yield_partner');
+        if ($csv) {
+            [$headers, $rows] = gamCsv($csv);
+            $col = [
+                'date' => gamHeaderIndex($headers, ['DATE']),
+                'partner' => gamHeaderIndex($headers, ['CLASSIFIED_YIELD_PARTNER_NAME']),
+                'callouts' => gamHeaderIndex($headers, ['YIELD_GROUP_CALLOUTS']),
+                'responses' => gamHeaderIndex($headers, ['YIELD_GROUP_SUCCESSFUL_RESPONSES']),
+                'bids' => gamHeaderIndex($headers, ['YIELD_GROUP_BIDS']),
+                'wins' => gamHeaderIndex($headers, ['YIELD_GROUP_AUCTIONS_WON']),
+                'impressions' => gamHeaderIndex($headers, ['YIELD_GROUP_IMPRESSIONS']),
+                'revenue' => gamHeaderIndex($headers, ['YIELD_GROUP_ESTIMATED_REVENUE']),
+            ];
+
+            foreach ($rows as $cols) {
+                $date = gamCol($cols, $col['date']);
+                if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) continue;
+
+                $partner = trim(gamCol($cols, $col['partner'], ''));
+                $callouts = (int)gamNum(gamCol($cols, $col['callouts'], 0));
+                $responses = (int)gamNum(gamCol($cols, $col['responses'], 0));
+                $impressions = (int)gamNum(gamCol($cols, $col['impressions'], 0));
+                if ($partner === '' && $callouts <= 0 && $impressions <= 0) continue;
+
+                $bids = (int)gamNum(gamCol($cols, $col['bids'], 0));
+                $wins = (int)gamNum(gamCol($cols, $col['wins'], 0));
+                insert('creative_latency_audit', [
+                    'date' => $date,
+                    'advertiser' => '',
+                    'demand_partner' => $partner,
+                    'creative_id' => '',
+                    'creative_name' => '',
+                    'creative_dimensions' => '',
+                    'source' => 'gam_yield_partner',
+                    'impressions' => $impressions,
+                    'ad_requests' => $callouts,
+                    'rendered' => $responses,
+                    'empty_count' => max(0, $callouts - $responses),
+                    'heavy_events' => 0,
+                    'avg_render_ms' => 0,
+                    'p95_render_ms' => 0,
+                    'avg_load_ms' => 0,
+                    'p95_load_ms' => 0,
+                    'creative_size_kb' => 0,
+                    'slow_load_pct' => 0,
+                    'very_slow_load_pct' => 0,
+                    'unviewed_before_loaded_pct' => 0,
+                    'viewability_pct' => 0,
+                    'ctr' => 0,
+                    'revenue_usd' => gamMoneyMicros(gamCol($cols, $col['revenue'], 0)),
+                    'notes' => "GAM yield partner report. Bids={$bids}; wins={$wins}",
+                ]);
+                $result['yield_partner']++;
+            }
+            logSync('GAM', 'INFO', 'creative_yield_partner_complete', "Yield partner: {$result['yield_partner']} registros importados");
+        } else {
+            $result['errors'][] = 'creative_yield_partner retornou vazio';
+        }
+    } catch (Exception $e) {
+        $result['errors'][] = 'creative_yield_partner: ' . $e->getMessage();
+        logSync('GAM', 'WARNING', 'creative_yield_partner_error', $e->getMessage());
+    }
+
+    if (!empty($result['errors'])) {
+        logSync('GAM', 'WARNING', 'creative_latency_partial', 'Auditoria criativos parcial: ' . implode(' | ', $result['errors']));
+    }
+
+    return $result;
+}
+
 function doSyncGAM()
 {
     $syncStart = microtime(true);
@@ -1434,15 +1880,32 @@ XML;
             }
         }
 
+        // ====================================================
+        // PASS 4: Creative latency / advertiser / demand partner audit
+        // ====================================================
+        $creativeLatency = ['creative' => 0, 'ad_speed' => 0, 'yield_partner' => 0, 'errors' => []];
+        if (($_GET['creative_audit'] ?? '') === '1') {
+            try {
+                $creativeLatency = syncGAMCreativeLatencyReports($soapUrl, $token, $networkCode, $apiVersion, $since, $until);
+            } catch (Exception $e) {
+                $creativeLatency['errors'][] = $e->getMessage();
+                logSync('GAM', 'WARNING', 'creative_latency_error', 'Erro na auditoria de criativos: ' . $e->getMessage());
+            }
+        }
+        $creativeLatencyImported = (int)$creativeLatency['creative'] + (int)$creativeLatency['ad_speed'] + (int)$creativeLatency['yield_partner'];
+
         $durationMs = round((microtime(true) - $syncStart) * 1000);
-        logSync('GAM', 'INFO', 'sync_complete', "GAM sync OK: {$imported} registros revenue, {$placementImported} placements, {$deviceImported} devices, " . count($dailyTotals) . " dias ({$durationMs}ms)", null, null, $durationMs);
+        $creativeMsg = (($_GET['creative_audit'] ?? '') === '1') ? ", {$creativeLatencyImported} creative audit" : '';
+        logSync('GAM', 'INFO', 'sync_complete', "GAM sync OK: {$imported} registros revenue, {$placementImported} placements, {$deviceImported} devices{$creativeMsg}, " . count($dailyTotals) . " dias ({$durationMs}ms)", null, null, $durationMs);
 
         echo json_encode([
             'success' => true,
-            'message' => "GAM sincronizado! {$imported} registros revenue, {$placementImported} placements, {$deviceImported} devices.",
+            'message' => "GAM sincronizado! {$imported} registros revenue, {$placementImported} placements, {$deviceImported} devices{$creativeMsg}.",
             'imported' => $imported,
             'placements_imported' => $placementImported,
             'devices_imported' => $deviceImported,
+            'creative_latency_imported' => $creativeLatencyImported,
+            'creative_latency' => $creativeLatency,
         ]);
 
     } catch (Exception $e) {

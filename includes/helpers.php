@@ -1152,6 +1152,107 @@ function ensureRevenueDevicesTable() {
 }
 
 /**
+ * Ensure creative latency audit table exists and has the newest columns.
+ * Used by the GAM sync and by the Creative Latency page.
+ */
+function ensureCreativeLatencyAuditTable() {
+    static $created = false;
+    if ($created) return;
+
+    try {
+        if (defined('DB_TYPE') && DB_TYPE === 'mysql') {
+            getDB()->exec("CREATE TABLE IF NOT EXISTS creative_latency_audit (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                date DATE NOT NULL,
+                advertiser VARCHAR(255) DEFAULT '',
+                demand_partner VARCHAR(255) DEFAULT '',
+                creative_id VARCHAR(100) DEFAULT '',
+                creative_name VARCHAR(255) DEFAULT '',
+                creative_dimensions VARCHAR(100) DEFAULT '',
+                source VARCHAR(100) DEFAULT 'csv',
+                impressions INT DEFAULT 0,
+                ad_requests INT DEFAULT 0,
+                rendered INT DEFAULT 0,
+                empty_count INT DEFAULT 0,
+                heavy_events INT DEFAULT 0,
+                avg_render_ms DECIMAL(12,2) DEFAULT 0,
+                p95_render_ms DECIMAL(12,2) DEFAULT 0,
+                avg_load_ms DECIMAL(12,2) DEFAULT 0,
+                p95_load_ms DECIMAL(12,2) DEFAULT 0,
+                creative_size_kb DECIMAL(12,2) DEFAULT 0,
+                slow_load_pct DECIMAL(8,4) DEFAULT 0,
+                very_slow_load_pct DECIMAL(8,4) DEFAULT 0,
+                unviewed_before_loaded_pct DECIMAL(8,4) DEFAULT 0,
+                viewability_pct DECIMAL(8,4) DEFAULT 0,
+                ctr DECIMAL(8,4) DEFAULT 0,
+                revenue_usd DECIMAL(12,6) DEFAULT 0,
+                notes TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
+            $existing = [];
+            foreach (getDB()->query("SHOW COLUMNS FROM creative_latency_audit")->fetchAll(PDO::FETCH_ASSOC) as $col) {
+                $existing[$col['Field']] = true;
+            }
+            $columns = [
+                'creative_dimensions' => "ALTER TABLE creative_latency_audit ADD COLUMN creative_dimensions VARCHAR(100) DEFAULT ''",
+                'slow_load_pct' => "ALTER TABLE creative_latency_audit ADD COLUMN slow_load_pct DECIMAL(8,4) DEFAULT 0",
+                'very_slow_load_pct' => "ALTER TABLE creative_latency_audit ADD COLUMN very_slow_load_pct DECIMAL(8,4) DEFAULT 0",
+                'unviewed_before_loaded_pct' => "ALTER TABLE creative_latency_audit ADD COLUMN unviewed_before_loaded_pct DECIMAL(8,4) DEFAULT 0",
+            ];
+        } else {
+            getDB()->exec("CREATE TABLE IF NOT EXISTS creative_latency_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date DATE NOT NULL,
+                advertiser VARCHAR(255) DEFAULT '',
+                demand_partner VARCHAR(255) DEFAULT '',
+                creative_id VARCHAR(100) DEFAULT '',
+                creative_name VARCHAR(255) DEFAULT '',
+                creative_dimensions VARCHAR(100) DEFAULT '',
+                source VARCHAR(100) DEFAULT 'csv',
+                impressions INTEGER DEFAULT 0,
+                ad_requests INTEGER DEFAULT 0,
+                rendered INTEGER DEFAULT 0,
+                empty_count INTEGER DEFAULT 0,
+                heavy_events INTEGER DEFAULT 0,
+                avg_render_ms DECIMAL(12,2) DEFAULT 0,
+                p95_render_ms DECIMAL(12,2) DEFAULT 0,
+                avg_load_ms DECIMAL(12,2) DEFAULT 0,
+                p95_load_ms DECIMAL(12,2) DEFAULT 0,
+                creative_size_kb DECIMAL(12,2) DEFAULT 0,
+                slow_load_pct DECIMAL(8,4) DEFAULT 0,
+                very_slow_load_pct DECIMAL(8,4) DEFAULT 0,
+                unviewed_before_loaded_pct DECIMAL(8,4) DEFAULT 0,
+                viewability_pct DECIMAL(8,4) DEFAULT 0,
+                ctr DECIMAL(8,4) DEFAULT 0,
+                revenue_usd DECIMAL(12,6) DEFAULT 0,
+                notes TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )");
+
+            $existing = [];
+            foreach (getDB()->query("PRAGMA table_info(creative_latency_audit)")->fetchAll(PDO::FETCH_ASSOC) as $col) {
+                $existing[$col['name']] = true;
+            }
+            $columns = [
+                'creative_dimensions' => "ALTER TABLE creative_latency_audit ADD COLUMN creative_dimensions VARCHAR(100) DEFAULT ''",
+                'slow_load_pct' => "ALTER TABLE creative_latency_audit ADD COLUMN slow_load_pct DECIMAL(8,4) DEFAULT 0",
+                'very_slow_load_pct' => "ALTER TABLE creative_latency_audit ADD COLUMN very_slow_load_pct DECIMAL(8,4) DEFAULT 0",
+                'unviewed_before_loaded_pct' => "ALTER TABLE creative_latency_audit ADD COLUMN unviewed_before_loaded_pct DECIMAL(8,4) DEFAULT 0",
+            ];
+        }
+
+        foreach ($columns as $name => $sql) {
+            if (empty($existing[$name])) {
+                getDB()->exec($sql);
+            }
+        }
+
+        $created = true;
+    } catch (Exception $e) {}
+}
+
+/**
  * Map FB API publisher_platform + platform_position to the {{placement}} macro format
  * used in utm_content (which GAM receives)
  */

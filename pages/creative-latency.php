@@ -81,56 +81,8 @@ function cl_detect_delimiter($line) {
 }
 
 function cl_ensure_table() {
-    if (defined('DB_TYPE') && DB_TYPE === 'mysql') {
-        getDB()->exec("CREATE TABLE IF NOT EXISTS creative_latency_audit (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            date DATE NOT NULL,
-            advertiser VARCHAR(255) DEFAULT '',
-            demand_partner VARCHAR(255) DEFAULT '',
-            creative_id VARCHAR(100) DEFAULT '',
-            creative_name VARCHAR(255) DEFAULT '',
-            source VARCHAR(100) DEFAULT 'csv',
-            impressions INT DEFAULT 0,
-            ad_requests INT DEFAULT 0,
-            rendered INT DEFAULT 0,
-            empty_count INT DEFAULT 0,
-            heavy_events INT DEFAULT 0,
-            avg_render_ms DECIMAL(12,2) DEFAULT 0,
-            p95_render_ms DECIMAL(12,2) DEFAULT 0,
-            avg_load_ms DECIMAL(12,2) DEFAULT 0,
-            p95_load_ms DECIMAL(12,2) DEFAULT 0,
-            creative_size_kb DECIMAL(12,2) DEFAULT 0,
-            viewability_pct DECIMAL(8,4) DEFAULT 0,
-            ctr DECIMAL(8,4) DEFAULT 0,
-            revenue_usd DECIMAL(12,6) DEFAULT 0,
-            notes TEXT,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
-    } else {
-        getDB()->exec("CREATE TABLE IF NOT EXISTS creative_latency_audit (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            date DATE NOT NULL,
-            advertiser VARCHAR(255) DEFAULT '',
-            demand_partner VARCHAR(255) DEFAULT '',
-            creative_id VARCHAR(100) DEFAULT '',
-            creative_name VARCHAR(255) DEFAULT '',
-            source VARCHAR(100) DEFAULT 'csv',
-            impressions INTEGER DEFAULT 0,
-            ad_requests INTEGER DEFAULT 0,
-            rendered INTEGER DEFAULT 0,
-            empty_count INTEGER DEFAULT 0,
-            heavy_events INTEGER DEFAULT 0,
-            avg_render_ms DECIMAL(12,2) DEFAULT 0,
-            p95_render_ms DECIMAL(12,2) DEFAULT 0,
-            avg_load_ms DECIMAL(12,2) DEFAULT 0,
-            p95_load_ms DECIMAL(12,2) DEFAULT 0,
-            creative_size_kb DECIMAL(12,2) DEFAULT 0,
-            viewability_pct DECIMAL(8,4) DEFAULT 0,
-            ctr DECIMAL(8,4) DEFAULT 0,
-            revenue_usd DECIMAL(12,6) DEFAULT 0,
-            notes TEXT,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )");
+    if (function_exists('ensureCreativeLatencyAuditTable')) {
+        ensureCreativeLatencyAuditTable();
     }
 }
 
@@ -143,6 +95,9 @@ function cl_assess($row, $hasLatency = true) {
     $avgLoad = cl_num($row['avg_load_ms'] ?? 0);
     $p95Load = cl_num($row['p95_load_ms'] ?? 0);
     $heavy = cl_num($row['heavy_events'] ?? 0);
+    $slowLoadPct = cl_num($row['slow_load_pct'] ?? 0);
+    $verySlowLoadPct = cl_num($row['very_slow_load_pct'] ?? 0);
+    $unviewedBeforeLoadedPct = cl_num($row['unviewed_before_loaded_pct'] ?? 0);
     $viewability = cl_num($row['viewability_pct'] ?? 0);
     $impressions = cl_num($row['impressions'] ?? 0);
     $requests = cl_num($row['ad_requests'] ?? 0);
@@ -178,6 +133,19 @@ function cl_assess($row, $hasLatency = true) {
     if ($heavy > 0) {
         $score += min(30, 10 + $heavy * 3);
         $flags[] = ['level' => 'high', 'label' => 'Evento de criativo pesado'];
+    }
+
+    if ($verySlowLoadPct >= 8) {
+        $score += 20;
+        $flags[] = ['level' => 'high', 'label' => 'Muitos loads acima de 4s'];
+    } elseif ($slowLoadPct >= 20) {
+        $score += 12;
+        $flags[] = ['level' => 'medium', 'label' => 'Load lento recorrente'];
+    }
+
+    if ($unviewedBeforeLoadedPct >= 10) {
+        $score += 12;
+        $flags[] = ['level' => 'medium', 'label' => 'Usuario sai antes do ad carregar'];
     }
 
     if ($viewability > 0 && $viewability < 45) {
@@ -262,12 +230,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'impor
                 $date = $dateFrom;
             }
 
+            $load24 = cl_percent(cl_pick($row, ['creative_load_time_2_4_s_percent', 'load_2_4_s_percent', 'load_2_4_pct', 'load_2s_4s_pct'], 0));
+            $load48 = cl_percent(cl_pick($row, ['creative_load_time_4_8_s_percent', 'load_4_8_s_percent', 'load_4_8_pct', 'load_4s_8s_pct'], 0));
+            $load8 = cl_percent(cl_pick($row, ['creative_load_time_greater_than_8_s_percent', 'creative_load_time_8_s_percent', 'load_gt_8_s_percent', 'load_8s_plus_pct'], 0));
+            $slowLoadPct = cl_percent(cl_pick($row, ['slow_load_pct', 'load_lento_pct', 'slow_creative_load_pct'], 0));
+            if ($slowLoadPct <= 0) {
+                $slowLoadPct = $load24 + $load48 + $load8;
+            }
+            $verySlowLoadPct = cl_percent(cl_pick($row, ['very_slow_load_pct', 'load_muito_lento_pct', 'very_slow_creative_load_pct'], 0));
+            if ($verySlowLoadPct <= 0) {
+                $verySlowLoadPct = $load48 + $load8;
+            }
+            $unviewedBeforeLoadedPct = cl_percent(cl_pick($row, ['unviewed_before_loaded_pct', 'user_scrolled_before_ad_loaded_pct', 'unviewed_reason_user_scrolled_before_ad_loaded_percent'], 0));
+
             insert('creative_latency_audit', [
                 'date' => $date,
                 'advertiser' => trim(cl_pick($row, ['advertiser', 'anunciante', 'buyer', 'comprador'], '')),
                 'demand_partner' => trim(cl_pick($row, ['demand_partner', 'demand', 'partner', 'demand_channel', 'ad_exchange', 'exchange', 'ssp', 'yield_partner'], '')),
                 'creative_id' => trim(cl_pick($row, ['creative_id', 'creativeid', 'id_criativo', 'creative'], '')),
                 'creative_name' => trim(cl_pick($row, ['creative_name', 'nome_criativo', 'creative_label', 'ad_name'], '')),
+                'creative_dimensions' => trim(cl_pick($row, ['creative_dimensions', 'creative_size', 'ad_size', 'size', 'dimensions', 'tamanho_criativo'], '')),
                 'source' => trim(cl_pick($row, ['source', 'fonte'], 'csv')),
                 'impressions' => (int)cl_num(cl_pick($row, ['impressions', 'impressoes', 'impressions_adx'], 0)),
                 'ad_requests' => (int)cl_num(cl_pick($row, ['ad_requests', 'requests', 'solicitacoes', 'ad_request'], 0)),
@@ -279,6 +261,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'impor
                 'avg_load_ms' => cl_ms(cl_pick($row, ['avg_load_ms', 'load_ms', 'creative_load_ms'], 0)),
                 'p95_load_ms' => cl_ms(cl_pick($row, ['p95_load_ms', 'load_p95_ms'], 0)),
                 'creative_size_kb' => cl_num(cl_pick($row, ['creative_size_kb', 'size_kb', 'peso_kb', 'creative_weight_kb'], 0)),
+                'slow_load_pct' => $slowLoadPct,
+                'very_slow_load_pct' => $verySlowLoadPct,
+                'unviewed_before_loaded_pct' => $unviewedBeforeLoadedPct,
                 'viewability_pct' => cl_percent(cl_pick($row, ['viewability_pct', 'viewability', 'active_view', 'active_view_pct'], 0)),
                 'ctr' => cl_percent(cl_pick($row, ['ctr', 'click_through_rate'], 0)),
                 'revenue_usd' => cl_num(cl_pick($row, ['revenue_usd', 'revenue', 'receita_usd'], 0)),
@@ -314,11 +299,15 @@ $partnerRows = fetchAll("
            SUM(rendered) as rendered,
            SUM(empty_count) as empty_count,
            SUM(heavy_events) as heavy_events,
-           CASE WHEN SUM(impressions) > 0 THEN SUM(avg_render_ms * impressions) / SUM(impressions) ELSE AVG(avg_render_ms) END as avg_render_ms,
+           AVG(NULLIF(avg_render_ms, 0)) as avg_render_ms,
            MAX(p95_render_ms) as p95_render_ms,
-           CASE WHEN SUM(impressions) > 0 THEN SUM(avg_load_ms * impressions) / SUM(impressions) ELSE AVG(avg_load_ms) END as avg_load_ms,
+           AVG(NULLIF(avg_load_ms, 0)) as avg_load_ms,
            MAX(p95_load_ms) as p95_load_ms,
            MAX(creative_size_kb) as creative_size_kb,
+           MAX(creative_dimensions) as creative_dimensions,
+           AVG(NULLIF(slow_load_pct, 0)) as slow_load_pct,
+           AVG(NULLIF(very_slow_load_pct, 0)) as very_slow_load_pct,
+           AVG(NULLIF(unviewed_before_loaded_pct, 0)) as unviewed_before_loaded_pct,
            AVG(NULLIF(viewability_pct, 0)) as viewability_pct,
            AVG(NULLIF(ctr, 0)) as ctr,
            SUM(revenue_usd) as revenue_usd,
@@ -341,6 +330,10 @@ $creativeRows = fetchAll("
            AVG(NULLIF(avg_load_ms, 0)) as avg_load_ms,
            MAX(p95_load_ms) as p95_load_ms,
            MAX(creative_size_kb) as creative_size_kb,
+           MAX(creative_dimensions) as creative_dimensions,
+           AVG(NULLIF(slow_load_pct, 0)) as slow_load_pct,
+           AVG(NULLIF(very_slow_load_pct, 0)) as very_slow_load_pct,
+           AVG(NULLIF(unviewed_before_loaded_pct, 0)) as unviewed_before_loaded_pct,
            AVG(NULLIF(viewability_pct, 0)) as viewability_pct,
            AVG(NULLIF(ctr, 0)) as ctr,
            SUM(revenue_usd) as revenue_usd
@@ -447,6 +440,7 @@ ob_start();
     <?php endforeach; ?>
 </select>
 <button class="btn-export" onclick="exportTableToCSV('creativePartnerTable', 'auditoria_demand_partner_<?= $dateFrom ?>_<?= $dateTo ?>')">Exportar CSV</button>
+<button class="btn btn-primary btn-sm" id="btnSyncCreativeGam" onclick="syncCreativeGAM()">Sync GAM</button>
 <?php $dateFilterExtra = ob_get_clean(); ?>
 <?php include __DIR__ . '/../includes/partials/date-filter-bar.php'; ?>
 
@@ -455,7 +449,7 @@ ob_start();
 
 <div class="cl-note">
     <strong>Auditoria de criativos pesados e latencia.</strong>
-    O Google Ad Manager recomenda minimizar latencia e evitar criativos pesados. Esta aba nao altera tags, SpunMidia, GPT, preloader ou anuncios; ela cruza dados locais e aceita CSV de relatorios para analisar anunciante, demand partner e criativo.
+    O Google Ad Manager recomenda minimizar latencia e evitar criativos pesados. Esta aba nao altera tags, SpunMidia, GPT, preloader ou anuncios; ela cruza dados locais, sincroniza relatorios GAM quando disponiveis e aceita CSV para campos externos como peso real em KB.
     <a href="https://support.google.com/admanager/answer/7485975?hl=en" target="_blank" rel="noopener" style="color:#64d2ff;">Fonte Google Ad Manager</a>.
 </div>
 
@@ -478,7 +472,7 @@ ob_start();
     <div class="card card-green">
         <div class="card-label">Revenue importado</div>
         <div class="card-value"><?= formatMoney($manualRevenue, 'USD') ?></div>
-        <div class="card-change">CSV/relatorios externos</div>
+        <div class="card-change">GAM/CSV/relatorios externos</div>
     </div>
 </div>
 
@@ -493,7 +487,7 @@ ob_start();
             <button class="btn btn-primary btn-sm" type="submit">Importar CSV</button>
         </form>
         <div class="cl-help">
-            Colunas aceitas: <code>date</code>, <code>advertiser</code>, <code>demand_partner</code>, <code>creative_id</code>, <code>creative_name</code>, <code>impressions</code>, <code>ad_requests</code>, <code>avg_render_ms</code>, <code>p95_render_ms</code>, <code>avg_load_ms</code>, <code>creative_size_kb</code>, <code>viewability_pct</code>, <code>heavy_events</code>, <code>revenue_usd</code>.
+            Colunas aceitas: <code>date</code>, <code>advertiser</code>, <code>demand_partner</code>, <code>creative_id</code>, <code>creative_name</code>, <code>creative_dimensions</code>, <code>impressions</code>, <code>ad_requests</code>, <code>avg_render_ms</code>, <code>p95_render_ms</code>, <code>avg_load_ms</code>, <code>creative_size_kb</code>, <code>slow_load_pct</code>, <code>very_slow_load_pct</code>, <code>viewability_pct</code>, <code>heavy_events</code>, <code>revenue_usd</code>.
         </div>
     </div>
 
@@ -506,7 +500,7 @@ ob_start();
                     <tr><td>Fill rate GAM</td><td><?= cl_num($programmatic['ad_requests'] ?? 0) > 0 ? formatNumber(cl_rate($programmatic['impressions'], $programmatic['ad_requests']), 1) . '%' : '-' ?></td><td>Proxy de request/render vazio</td></tr>
                     <tr><td>Active View</td><td><?= cl_num($programmatic['active_view_pct'] ?? 0) > 0 ? formatPercentRaw(cl_num($programmatic['active_view_pct']) * 100) : '-' ?></td><td>Proxy de viewability</td></tr>
                     <tr><td>Match rate</td><td><?= cl_num($programmatic['match_rate'] ?? 0) > 0 ? formatPercentRaw(cl_num($programmatic['match_rate']) * 100) : '-' ?></td><td>Risco de demanda fraca</td></tr>
-                    <tr><td>Latencia real por criativo</td><td>-</td><td>Precisa CSV/GAM/Spun/GTM leve</td></tr>
+                    <tr><td>Latencia real por criativo</td><td><?= $totalImportedRows > 0 ? formatNumber($totalImportedRows) . ' linhas' : '-' ?></td><td>GAM Ad Speed quando habilitado, CSV/Spun como complemento</td></tr>
                 </tbody>
             </table>
         </div>
@@ -523,13 +517,13 @@ ob_start();
             <thead>
                 <tr>
                     <th>Risco</th><th>Score</th><th>Anunciante</th><th>Demand partner</th><th>Fonte</th>
-                    <th>Imp.</th><th>Requests</th><th>Fill</th><th>Heavy</th><th>Peso max</th>
-                    <th>Render medio</th><th>P95 render</th><th>Load medio</th><th>Viewability</th><th>Revenue</th><th>Alertas</th>
+                    <th>Imp.</th><th>Requests</th><th>Fill</th><th>Heavy</th><th>Peso max</th><th>Dimensao</th>
+                    <th>Render medio</th><th>P95 render</th><th>Load medio</th><th>Load lento</th><th>&gt;4s</th><th>Viewability</th><th>Revenue</th><th>Alertas</th>
                 </tr>
             </thead>
             <tbody>
             <?php if (empty($partnerRows)): ?>
-                <tr><td colspan="16" class="empty-state" style="padding:38px;">Ainda nao ha dados por anunciante/demand partner. Importe um CSV exportado do GAM, Spun, AdX ou monitoramento leve.</td></tr>
+                <tr><td colspan="19" class="empty-state" style="padding:38px;">Ainda nao ha dados por anunciante/demand partner. Sincronize o GAM ou importe um CSV exportado do GAM, Spun, AdX ou monitoramento leve.</td></tr>
             <?php else: foreach ($partnerRows as $r): ?>
                 <tr class="cl-risk-<?= sanitize($r['risk_level']) ?>">
                     <td><span class="badge <?= cl_badge($r['risk_level']) ?>"><?= cl_label($r['risk_level']) ?></span></td>
@@ -542,9 +536,12 @@ ob_start();
                     <td><?= $r['fill_rate'] > 0 ? formatNumber($r['fill_rate'], 1) . '%' : '-' ?></td>
                     <td><?= (int)$r['heavy_events'] > 0 ? formatNumber($r['heavy_events']) : '-' ?></td>
                     <td><?= $r['creative_size_kb'] > 0 ? formatNumber($r['creative_size_kb'], 0) . ' KB' : '-' ?></td>
+                    <td><?= sanitize($r['creative_dimensions'] ?: '-') ?></td>
                     <td><?= $r['avg_render_ms'] > 0 ? formatNumber($r['avg_render_ms'], 0) . ' ms' : '-' ?></td>
                     <td><?= $r['p95_render_ms'] > 0 ? formatNumber($r['p95_render_ms'], 0) . ' ms' : '-' ?></td>
                     <td><?= $r['avg_load_ms'] > 0 ? formatNumber($r['avg_load_ms'], 0) . ' ms' : '-' ?></td>
+                    <td><?= $r['slow_load_pct'] > 0 ? formatNumber($r['slow_load_pct'], 1) . '%' : '-' ?></td>
+                    <td><?= $r['very_slow_load_pct'] > 0 ? formatNumber($r['very_slow_load_pct'], 1) . '%' : '-' ?></td>
                     <td><?= $r['viewability_pct'] > 0 ? formatNumber($r['viewability_pct'], 1) . '%' : '-' ?></td>
                     <td><?= formatMoney($r['revenue_usd'], 'USD') ?></td>
                     <td>
@@ -569,12 +566,12 @@ ob_start();
             <thead>
                 <tr>
                     <th>Risco</th><th>Score</th><th>Criativo</th><th>Anunciante</th><th>Partner</th>
-                    <th>Imp.</th><th>Peso</th><th>Render medio</th><th>P95 render</th><th>Load medio</th><th>Viewability</th><th>Heavy</th><th>Revenue</th>
+                    <th>Imp.</th><th>Peso</th><th>Dimensao</th><th>Render medio</th><th>P95 render</th><th>Load medio</th><th>Load lento</th><th>&gt;4s</th><th>Viewability</th><th>Heavy</th><th>Revenue</th>
                 </tr>
             </thead>
             <tbody>
             <?php if (empty($creativeRows)): ?>
-                <tr><td colspan="13" class="empty-state" style="padding:32px;">Sem criativos importados ainda.</td></tr>
+                <tr><td colspan="16" class="empty-state" style="padding:32px;">Sem criativos importados ainda.</td></tr>
             <?php else: foreach ($creativeRows as $r): ?>
                 <tr class="cl-risk-<?= sanitize($r['risk_level']) ?>">
                     <td><span class="badge <?= cl_badge($r['risk_level']) ?>"><?= cl_label($r['risk_level']) ?></span></td>
@@ -584,9 +581,12 @@ ob_start();
                     <td><?= sanitize($r['demand_partner'] ?: '-') ?></td>
                     <td><?= formatNumber($r['impressions']) ?></td>
                     <td><?= $r['creative_size_kb'] > 0 ? formatNumber($r['creative_size_kb'], 0) . ' KB' : '-' ?></td>
+                    <td><?= sanitize($r['creative_dimensions'] ?: '-') ?></td>
                     <td><?= $r['avg_render_ms'] > 0 ? formatNumber($r['avg_render_ms'], 0) . ' ms' : '-' ?></td>
                     <td><?= $r['p95_render_ms'] > 0 ? formatNumber($r['p95_render_ms'], 0) . ' ms' : '-' ?></td>
                     <td><?= $r['avg_load_ms'] > 0 ? formatNumber($r['avg_load_ms'], 0) . ' ms' : '-' ?></td>
+                    <td><?= $r['slow_load_pct'] > 0 ? formatNumber($r['slow_load_pct'], 1) . '%' : '-' ?></td>
+                    <td><?= $r['very_slow_load_pct'] > 0 ? formatNumber($r['very_slow_load_pct'], 1) . '%' : '-' ?></td>
                     <td><?= $r['viewability_pct'] > 0 ? formatNumber($r['viewability_pct'], 1) . '%' : '-' ?></td>
                     <td><?= (int)$r['heavy_events'] > 0 ? formatNumber($r['heavy_events']) : '-' ?></td>
                     <td><?= formatMoney($r['revenue_usd'], 'USD') ?></td>
@@ -653,8 +653,9 @@ ob_start();
         <table class="cl-table">
             <thead><tr><th>Item</th><th>Status</th><th>Como medir sem interferir</th></tr></thead>
             <tbody>
-                <tr><td>Criativo pesado</td><td><span class="badge badge-yellow">Precisa dado externo</span></td><td>Importar tamanho do criativo via relatorio do ad server/Spun ou auditoria de rede; nao inspecionar iframe de anuncio.</td></tr>
-                <tr><td>Render/load por demand partner</td><td><span class="badge badge-yellow">Precisa CSV ou evento leve</span></td><td>Preferir relatorio GAM/Spun. Se usar GTM, apenas medir timestamps de eventos, async, sem bloquear renderizacao.</td></tr>
+                <tr><td>Criativo pesado</td><td><span class="badge badge-yellow">Parcial</span></td><td>GAM envia tamanho/dimensao do slot; peso real em KB ainda depende de CSV Spun/ad server ou auditoria de rede externa.</td></tr>
+                <tr><td>Render/load por anunciante</td><td><span class="badge badge-blue">GAM Ad Speed</span></td><td>Sincronizacao tenta importar buckets de load do GAM. Se a conta nao liberar o relatorio, os logs mostram o erro.</td></tr>
+                <tr><td>Demand partner</td><td><span class="badge badge-blue">GAM classificado</span></td><td>Sincronizacao tenta importar parceiro classificado. Latencia por partner ainda pode exigir Spun/CSV se o GAM nao cruzar com Ad Speed.</td></tr>
                 <tr><td>ad_slot_requested/rendered/empty</td><td><span class="badge badge-red">Nao instalado no site</span></td><td>Implementar somente apos confirmacao; usar dataLayer/GA4, sem alterar GPT, Spun, preloader ou layout.</td></tr>
                 <tr><td>visible_ad_detected</td><td><span class="badge badge-yellow">Cuidado</span></td><td>Medir apenas visibilidade de containers proprios, sem acessar conteudo cross-origin do iframe.</td></tr>
                 <tr><td>Politicas Google</td><td><span class="badge badge-green">Respeitado</span></td><td>Sem fingerprint agressivo, sem PII e sem manipular leilao/anuncio.</td></tr>
@@ -662,6 +663,40 @@ ob_start();
         </table>
     </div>
 </div>
+
+<script>
+async function syncCreativeGAM() {
+    const btn = document.getElementById('btnSyncCreativeGam');
+    const original = btn ? btn.textContent : '';
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Sincronizando...';
+    }
+
+    try {
+        const res = await fetch('api/sync.php?action=sync_gam&skip_cross_ref=1&creative_audit=1', { cache: 'no-store' });
+        const json = await res.json();
+        if (!json.success) {
+            throw new Error(json.error || 'Falha ao sincronizar GAM');
+        }
+
+        const imported = json.creative_latency_imported ?? 0;
+        const msg = imported > 0
+            ? `GAM sincronizado. Auditoria recebeu ${imported} linhas.`
+            : 'GAM sincronizado, mas nenhum dado novo de criativo/latencia foi retornado.';
+        if (typeof showToast === 'function') showToast(msg, imported > 0 ? 'success' : 'warning');
+        setTimeout(() => window.location.reload(), 900);
+    } catch (e) {
+        if (typeof showToast === 'function') showToast(e.message, 'error');
+        alert(e.message);
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = original || 'Sync GAM';
+        }
+    }
+}
+</script>
 
 <style>
 .cl-note {
