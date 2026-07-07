@@ -671,21 +671,24 @@ function addGA4SessionFallbackRows($propertyId, $token, $since, $until, $utmSour
 
     $fallbacks = [
         [
-            'name' => 'campaign_unfiltered',
-            'type' => 'campaign',
-            'body' => buildGA4SessionsRequestBody($since, $until, $utmSource, 10000, false),
-        ],
-        [
             'name' => 'url_filtered',
             'type' => 'url',
             'body' => buildGA4LandingPageRequestBody($since, $until, $utmSource),
         ],
-        [
+    ];
+
+    if (getSetting('ga4_allow_unfiltered_fallback', '0') === '1') {
+        $fallbacks[] = [
+            'name' => 'campaign_unfiltered',
+            'type' => 'campaign',
+            'body' => buildGA4SessionsRequestBody($since, $until, $utmSource, 10000, false),
+        ];
+        $fallbacks[] = [
             'name' => 'url_unfiltered',
             'type' => 'url',
             'body' => buildGA4LandingPageRequestBody($since, $until, $utmSource, 10000, false),
-        ],
-    ];
+        ];
+    }
 
     foreach ($fallbacks as $fallback) {
         try {

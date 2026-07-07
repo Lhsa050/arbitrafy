@@ -138,7 +138,8 @@ try {
             </span>
         </div>
         <p><strong>4.</strong> As sessões vêm exatamente do tráfego da campanha do Facebook (mesma utm_source + utm_campaign)</p>
-        <p><strong>5.</strong> A receita vem do GAM, que já puxa por utm_campaign</p>
+        <p><strong>5.</strong> Para manter o Connect Rate consistente, fallbacks sem filtro de origem ficam desligados por padrão. Se usa mais de uma origem, separe no campo acima com vírgula.</p>
+        <p><strong>6.</strong> A receita vem do GAM, que já puxa por utm_campaign</p>
     </div>
 </div>
 

@@ -2475,6 +2475,7 @@ function doSyncGA4()
         'unmatched' => $stats['unmatched'],
         'unmatched_samples' => $stats['unmatched_samples'],
         'fallback_reports' => $fallbackReports,
+        'unfiltered_fallback' => getSetting('ga4_allow_unfiltered_fallback', '0') === '1' ? 'enabled' : 'disabled',
     ];
     logSync('GA4', 'INFO', 'sync_complete', "GA4 sync OK: " . count($sessionRows) . " registros, {$stats['sessions']} sessoes ({$durationMs}ms)", $details, null, $durationMs);
 
