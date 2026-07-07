@@ -53,7 +53,7 @@ requireLogin();
 
 // Valid pages
 $validPages = [
-    'dashboard', 'campaigns', 'analytics', 'traffic-quality', 'placements', 'devices', 'revenue', 'programmatic',
+    'dashboard', 'campaigns', 'analytics', 'traffic-quality', 'creative-latency', 'placements', 'devices', 'revenue', 'programmatic',
     'financial', 'spending-plan', 'tasks', 'logs', 'update',
     'settings', 'google-ads', 'connect-facebook', 'connect-google', 'connect-gam', 'connect-ga4'
 ];
@@ -72,6 +72,7 @@ if (!file_exists($pageFile)) {
 $pageTitles = [
     'dashboard' => 'Dashboard',
     'traffic-quality' => 'Qualidade de Trafego',
+    'creative-latency' => 'Criativos e Latencia',
     'campaigns' => 'Campanhas Facebook',
     'analytics' => 'Análises',
     'placements' => 'Análise Placement',
@@ -137,6 +138,10 @@ $pageTitle = $pageTitles[$page] ?? 'Dashboard';
                 <a href="?page=traffic-quality" class="nav-item <?= $page === 'traffic-quality' ? 'active' : '' ?>">
                     <span class="nav-icon">IVT</span>
                     <span class="nav-text">Qualidade</span>
+                </a>
+                <a href="?page=creative-latency" class="nav-item <?= $page === 'creative-latency' ? 'active' : '' ?>">
+                    <span class="nav-icon">ADS</span>
+                    <span class="nav-text">Criativos</span>
                 </a>
                 <a href="?page=placements" class="nav-item <?= $page === 'placements' ? 'active' : '' ?>">
                     <span class="nav-icon">📍</span>
